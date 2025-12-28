@@ -9,12 +9,6 @@ venv/
 ENV/
 .venv
 
-# Data
-data/documents/*
-data/vectors/*
-data/database.db
-!data/.gitkeep
-
 # IDE
 .vscode/
 .idea/
