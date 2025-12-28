@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BNO Assistant | e& Business Network Operations</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--e-bg);
+            color: var(--e-text);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* E& Brand Colors - Official 2024 Red Logo */
+        :root {
+            --e-red: #DC143C;          /* Crimson Red - Primary Logo Color */
+            --e-red-dark: #B01030;     /* Darker red for hover */
+            --e-red-light: #E63950;    /* Lighter red */
+            --e-black: #000000;        /* Black */
+            --e-white: #FFFFFF;         /* White */
+            --e-gray: #2C2C2C;         /* Dark Gray */
+            --e-gray-light: #6B6B6B;   /* Light Gray */
+            --e-text: #1A1A1A;         /* Text color */
+            --e-text-light: #666666;   /* Light text */
+            --e-bg: #FAFAFA;           /* Light background */
+            --e-border: #E0E0E0;       /* Border color */
+        }
+
+        /* Login Screen */
+        #loginScreen {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background: linear-gradient(135deg, var(--e-red) 0%, var(--e-red-dark) 100%);
+            position: relative;
+        }
+
+        #loginScreen.checking-auth {
+            display: flex;
+        }
+
+        #loginScreen.hidden {
+            display: none;
+        }
+
+        /* Loading overlay */
+        .auth-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background: linear-gradient(135deg, var(--e-red) 0%, var(--e-red-dark) 100%);
+            position: relative;
+        }
+
+        .auth-loading.hidden {
+            display: none;
+        }
+
+        .auth-loading-content {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 48px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(220, 20, 60, 0.3);
+        }
+
+        .auth-loading-content .loading {
+            margin: 0 auto 16px;
+            width: 40px;
+            height: 40px;
+        }
+
+        #loginScreen::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml,<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse"><path d="M 100 0 L 0 0 0 100" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1"/></pattern></defs><rect width="100%" height="100%" fill="url(%23grid)"/></svg>');
+            opacity: 0.3;
+        }
+
+        .login-card {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 48px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 20px 60px rgba(220, 20, 60, 0.3);
+            position: relative;
+            z-index: 1;
+        }
+
+        .login-card::before {
+            content: 'e&';
+            position: absolute;
+            top: -30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--e-red);
+            color: white;
+            width: 60px;
+            height: 60px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: 700;
+            box-shadow: 0 8px 24px rgba(220, 20, 60, 0.4);
+        }
+
+        .login-card h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: var(--e-text);
+            font-weight: 700;
+            margin-top: 20px;
+        }
+
+        .login-card .subtitle {
+            color: var(--e-text-light);
+            margin-bottom: 32px;
+            font-size: 14px;
+            font-weight: 400;
+        }
+
+        .login-card .bno-badge {
+            display: inline-block;
+            background: var(--e-red);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #1a1a1a;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d0d0d0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--e-red);
+            box-shadow: 0 0 0 3px rgba(220, 20, 60, 0.1);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+
+        .btn-primary {
+            background: var(--e-red);
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(220, 20, 60, 0.3);
+        }
+
+        .btn-primary:hover {
+            background: var(--e-red-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(220, 20, 60, 0.4);
+        }
+
+        .btn-primary:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .error-message {
+            color: #d32f2f;
+            font-size: 13px;
+            margin-top: 8px;
+            display: none;
+        }
+
+        /* Main Chat Interface */
+        #chatScreen {
+            display: none;
+            height: 100vh;
+            flex-direction: column;
+        }
+
+        /* Top Bar */
+        .top-bar {
+            background: #ffffff;
+            border-bottom: 2px solid var(--e-border);
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+
+        .top-bar .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .top-bar .e-logo {
+            width: 40px;
+            height: 40px;
+            background: var(--e-red);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 18px;
+        }
+
+        .top-bar h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--e-text);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .top-bar .bno-tag {
+            background: var(--e-red);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .user-name {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .btn-logout {
+            padding: 6px 12px;
+            background: transparent;
+            border: 1px solid #d0d0d0;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            color: #1a1a1a;
+        }
+
+        .btn-logout:hover {
+            background: #f5f5f5;
+        }
+
+        .btn-docs {
+            padding: 8px 16px;
+            background: var(--e-red);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            font-weight: 600;
+            box-shadow: 0 2px 8px rgba(220, 20, 60, 0.3);
+            transition: all 0.3s;
+        }
+
+        .btn-docs:hover {
+            background: var(--e-red-dark);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(220, 20, 60, 0.4);
+        }
+
+        /* Document Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 800px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-header h2 {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+        }
+
+        .upload-area {
+            border: 2px dashed #d0d0d0;
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            margin-bottom: 24px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .upload-area:hover {
+            border-color: #1a1a1a;
+        }
+
+        .upload-area.dragover {
+            border-color: #1a1a1a;
+            background: #f9f9f9;
+        }
+
+        .documents-list {
+            margin-top: 20px;
+        }
+
+        .document-item {
+            padding: 12px;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .document-info {
+            flex: 1;
+        }
+
+        .document-title {
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .document-meta {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .document-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-small {
+            padding: 4px 8px;
+            font-size: 12px;
+            border: 1px solid #d0d0d0;
+            background: transparent;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .btn-small:hover {
+            background: #f5f5f5;
+        }
+
+        .btn-small.danger {
+            color: #d32f2f;
+            border-color: #d32f2f;
+        }
+
+        .btn-small.danger:hover {
+            background: #ffebee;
+        }
+
+        /* Main Container */
+        .main-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Sidebar styles moved to styles.css to avoid conflicts */
+
+
+        /* Chat item styles moved to styles.css */
+
+        /* Context Menu */
+        .context-menu {
+            position: fixed;
+            background: #ffffff;
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+            z-index: 1000;
+            min-width: 180px;
+            padding: 6px 0;
+            display: none;
+            font-family: inherit;
+            overflow: hidden;
+        }
+
+        .context-menu-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            color: #1a1a1a;
+            transition: background-color 0.1s ease;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            line-height: 1.4;
+            font-weight: 400;
+        }
+
+        .context-menu-item:hover {
+            background-color: #f5f5f5;
+        }
+
+        .context-menu-item.danger {
+            color: #d32f2f;
+        }
+
+        .context-menu-item.danger:hover {
+            background-color: #ffebee;
+        }
+
+        .context-menu-divider {
+            height: 1px;
+            background: #e0e0e0;
+            margin: 4px 8px;
+        }
+
+        /* Selection Mode */
+        .selection-toolbar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #ffffff;
+            border-top: 1px solid #e0e0e0;
+            box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+            z-index: 999;
+            padding: 12px 24px;
+        }
+
+        .selection-toolbar-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .selection-info {
+            font-size: 14px;
+            font-weight: 500;
+            color: #1a1a1a;
+        }
+
+        .selection-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .selection-btn {
+            padding: 8px 16px;
+            border: 1px solid #d0d0d0;
+            border-radius: 6px;
+            background: #ffffff;
+            color: #1a1a1a;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-family: inherit;
+        }
+
+        .selection-btn:hover:not(:disabled) {
+            background: #f5f5f5;
+        }
+
+        .selection-btn.danger {
+            background: var(--e-red);
+            color: #ffffff;
+            border-color: var(--e-red);
+        }
+
+        .selection-btn.danger:hover:not(:disabled) {
+            background: var(--e-red-dark);
+        }
+
+        .selection-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Selection mode styles moved to styles.css */
+
+        /* Chat Area */
+        /* Chat area styles moved to styles.css */
+
+        /* Messages container styles moved to styles.css */
+
+        /* Message styles moved to styles.css to avoid conflicts */
+
+        /* Input Area */
+        .input-area {
+            padding: 20px;
+            border-top: 1px solid #e0e0e0;
+            background: #ffffff;
+        }
+
+        .input-container {
+            max-width: 800px;
+            margin: 0 auto;
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        .input-wrapper {
+            flex: 1;
+            position: relative;
+        }
+
+        #messageInput {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid #d0d0d0;
+            border-radius: 24px;
+            font-size: 15px;
+            font-family: inherit;
+            resize: none;
+            max-height: 200px;
+            min-height: 44px;
+        }
+
+        #messageInput:focus {
+            outline: none;
+            border-color: var(--e-red);
+            box-shadow: 0 0 0 3px rgba(220, 20, 60, 0.1);
+        }
+
+        .btn-send {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: var(--e-red);
+            color: #ffffff;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.3s;
+            box-shadow: 0 2px 8px rgba(220, 20, 60, 0.2);
+        }
+
+        .btn-send:hover:not(:disabled) {
+            background: var(--e-red-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(220, 20, 60, 0.3);
+        }
+
+        .btn-send:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* Empty state styles moved to styles.css */
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(220, 20, 60, 0.2);
+            border-top-color: var(--e-red);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Auth Loading Screen -->
+    <div id="authLoading" class="auth-loading hidden">
+        <div class="auth-loading-content">
+            <div class="loading"></div>
+            <p style="color: var(--e-text); font-weight: 500; margin-top: 16px;">Checking authentication...</p>
+        </div>
+    </div>
+
+    <!-- Login Screen -->
+    <div id="loginScreen" class="hidden">
+        <div class="login-card">
+            <div class="bno-badge">Business Network Operations</div>
+            <h1>BNO Assistant</h1>
+            <p class="subtitle">Powered by e& • Sign in to access your knowledge base</p>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required autocomplete="current-password">
+                </div>
+                <div class="error-message" id="loginError"></div>
+                <button type="submit" class="btn btn-primary" id="loginBtn">Sign In</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Chat Screen -->
+    <div id="chatScreen">
+        <div class="top-bar">
+            <div class="logo-section">
+                <div class="e-logo">e&</div>
+                <h1>BNO Assistant<span class="bno-tag">BNO</span></h1>
+            </div>
+            <div class="user-info">
+                <button class="btn-docs" onclick="showDocumentsScreen()" id="btnDocuments">Documents</button>
+                <button class="btn-admin" onclick="showAdminScreen()" id="btnAdmin" style="display: none; padding: 8px 16px; background: var(--e-gray); color: white; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; font-weight: 600; margin-right: 8px;">Admin</button>
+                <span class="user-name" id="userName"></span>
+                <button class="btn-logout" onclick="logout()">Logout</button>
+            </div>
+        </div>
+        <div class="main-container">
+            <div class="sidebar">
+                <div class="sidebar-header">
+                    <button class="btn-new-chat" onclick="createNewChat()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                        New Chat
+                    </button>
+                </div>
+                <div class="chat-list" id="chatList"></div>
+            </div>
+            
+            <!-- Context Menu -->
+            <div id="contextMenu" class="context-menu">
+                <div class="context-menu-item" onclick="renameChat()">
+                    <span>Rename</span>
+                </div>
+                <div class="context-menu-item" onclick="enterSelectionMode()">
+                    <span>Select</span>
+                </div>
+                <div class="context-menu-divider"></div>
+                <div class="context-menu-item danger" onclick="deleteChatFromContext()">
+                    <span>Delete</span>
+                </div>
+            </div>
+            
+            <!-- Selection Mode Toolbar -->
+            <div id="selectionToolbar" class="selection-toolbar" style="display: none;">
+                <div class="selection-toolbar-content">
+                    <div class="selection-info">
+                        <span id="selectionCount">0 selected</span>
+                    </div>
+                    <div class="selection-actions">
+                        <button class="selection-btn" onclick="selectAllChats()">Select All</button>
+                        <button class="selection-btn danger" onclick="deleteSelectedChats()" id="deleteSelectedBtn" disabled>Delete Selected</button>
+                        <button class="selection-btn" onclick="exitSelectionMode()">Cancel</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="chat-area">
+                <div class="messages-container" id="messagesContainer">
+                    <div class="empty-state">Start a new conversation or select a chat from the sidebar</div>
+                </div>
+                <div class="input-area">
+                    <div class="input-container">
+                        <div class="input-wrapper">
+                            <textarea id="messageInput" placeholder="Type your message..." rows="1"></textarea>
+                        </div>
+                        <button class="btn-send" id="sendBtn" onclick="sendMessage()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Documents Screen -->
+    <div id="documentsScreen" style="display: none; height: 100vh; flex-direction: column; background: var(--e-bg);">
+        <div class="top-bar" style="background: var(--e-red); color: white; border-bottom: none;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <button onclick="showChatScreen()" style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 500; transition: all 0.3s;" onmouseover="this.style.background='rgba(255,255,255,0.3)'" onmouseout="this.style.background='rgba(255,255,255,0.2)'">← Back to Chat</button>
+                <div class="e-logo" style="background: rgba(255,255,255,0.2);">e&</div>
+                <h1 style="color: white; margin: 0; display: flex; align-items: center; gap: 8px;">Document Management<span class="bno-tag" style="background: rgba(255,255,255,0.2); color: white;">BNO</span></h1>
+            </div>
+            <div class="user-info">
+                <span class="user-name" id="userNameDocs" style="color: white;"></span>
+                <button class="btn-logout" onclick="logout()" style="background: rgba(255,255,255,0.1); color: white; border-color: rgba(255,255,255,0.3);">Logout</button>
+            </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 24px; max-width: 1200px; margin: 0 auto; width: 100%;">
+            <!-- Upload Section -->
+            <div style="background: white; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                    <h2 style="margin-bottom: 16px; display: flex; align-items: center; gap: 8px; color: var(--e-text);">
+                    Upload Documents
+                </h2>
+                <div id="uploadPermissionMessage" style="display: none; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 16px; margin-bottom: 20px; color: #856404;">
+                    <strong>⚠️ Upload Restricted:</strong> You don't have permission to upload documents. Contact an administrator to request access.
+                </div>
+                <div class="upload-area" id="uploadArea" onclick="if(userCanUpload) document.getElementById('fileInput').click()" style="border: 2px dashed var(--e-red); background: #ffffff; cursor: pointer;">
+                    <p style="font-size: 16px; font-weight: 600; color: var(--e-text); margin-bottom: 8px;">Click to upload or drag and drop</p>
+                    <p style="font-size: 13px; color: var(--e-text-light);">PDF, DOCX, PPTX, TXT • Max file size: 50MB • Multiple files supported</p>
+                    <input type="file" id="fileInput" style="display: none" multiple accept=".pdf,.docx,.pptx,.txt">
+                </div>
+                
+                <!-- Upload Progress -->
+                <div id="uploadProgressContainer" style="display: none; margin-top: 20px;">
+                    <div id="uploadProgress"></div>
+                </div>
+            </div>
+
+            <!-- Documents List -->
+            <div style="background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="display: flex; align-items: center; gap: 8px; color: var(--e-text);">
+                        Shared Documents
+                    </h2>
+                    <div id="docStats" style="font-size: 14px; color: #666;"></div>
+                </div>
+                <div class="documents-list" id="documentsList">
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        <div class="loading" style="margin: 0 auto 12px;"></div>
+                        <p>Loading documents...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Screen -->
+    <div id="adminScreen" style="display: none; height: 100vh; flex-direction: column; background: var(--e-bg);">
+        <div class="top-bar" style="background: var(--e-gray); color: white; border-bottom: none;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <button onclick="showChatScreen()" style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 500;">← Back to Chat</button>
+                <div class="e-logo" style="background: rgba(255,255,255,0.2);">e&</div>
+                <h1 style="color: white; margin: 0;">User Management<span class="bno-tag" style="background: var(--e-red); color: white;">Admin</span></h1>
+            </div>
+            <div class="user-info">
+                <span class="user-name" id="userNameAdmin" style="color: white;"></span>
+                <button class="btn-logout" onclick="logout()" style="background: rgba(255,255,255,0.1); color: white; border-color: rgba(255,255,255,0.3);">Logout</button>
+            </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 24px; max-width: 1200px; margin: 0 auto; width: 100%;">
+            <!-- Create User Section -->
+            <div style="background: white; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                <h2 style="margin-bottom: 20px; color: var(--e-text); display: flex; align-items: center; gap: 8px;">
+                    Create New User Account
+                </h2>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 20px;">
+                    <div>
+                        <label for="newUserUsername" style="display: block; margin-bottom: 6px; font-weight: 500; color: var(--e-text); font-size: 14px;">Login Username *</label>
+                        <input type="text" id="newUserUsername" placeholder="Enter username for login" required style="width: 100%; padding: 10px; border: 1px solid var(--e-border); border-radius: 6px; font-size: 14px;">
+                    </div>
+                    <div>
+                        <label for="newUserPassword" style="display: block; margin-bottom: 6px; font-weight: 500; color: var(--e-text); font-size: 14px;">Login Password *</label>
+                        <input type="password" id="newUserPassword" placeholder="Enter password for login" required style="width: 100%; padding: 10px; border: 1px solid var(--e-border); border-radius: 6px; font-size: 14px;">
+                    </div>
+                    <div>
+                        <label for="newUserFullName" style="display: block; margin-bottom: 6px; font-weight: 500; color: var(--e-text); font-size: 14px;">Display Name</label>
+                        <input type="text" id="newUserFullName" placeholder="Full name (shown in UI)" style="width: 100%; padding: 10px; border: 1px solid var(--e-border); border-radius: 6px; font-size: 14px;">
+                        <small style="color: var(--e-text-light); font-size: 12px; margin-top: 4px; display: block;">This name will be displayed in the interface</small>
+                    </div>
+                </div>
+                <div style="background: #f8f9fa; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+                    <div style="font-weight: 600; margin-bottom: 12px; color: var(--e-text); font-size: 14px;">Permissions</div>
+                    <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 8px 12px; border-radius: 6px; transition: background 0.2s;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='transparent'">
+                            <input type="checkbox" id="newUserCanUpload" style="width: 20px; height: 20px; cursor: pointer; accent-color: var(--e-red);">
+                            <div>
+                                <div style="font-weight: 500; color: var(--e-text);">Upload Permission</div>
+                                <div style="font-size: 12px; color: var(--e-text-light);">Allow user to upload documents</div>
+                            </div>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 8px 12px; border-radius: 6px; transition: background 0.2s;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='transparent'">
+                            <input type="checkbox" id="newUserIsAdmin" style="width: 20px; height: 20px; cursor: pointer; accent-color: var(--e-red);">
+                            <div>
+                                <div style="font-weight: 500; color: var(--e-text);">Admin Privileges</div>
+                                <div style="font-size: 12px; color: var(--e-text-light);">Grant administrator access</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <button onclick="createUser()" style="padding: 12px 24px; background: var(--e-red); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 15px; transition: all 0.3s;" onmouseover="this.style.background='var(--e-red-dark)'; this.style.transform='translateY(-1px)'" onmouseout="this.style.background='var(--e-red)'; this.style.transform='translateY(0)'">Create User Account</button>
+            </div>
+
+            <!-- Users List -->
+            <div style="background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                <h2 style="margin-bottom: 20px; color: var(--e-text);">All Users</h2>
+                <div id="usersList" style="display: flex; flex-direction: column; gap: 12px;">
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        <div class="loading" style="margin: 0 auto 12px;"></div>
+                        <p>Loading users...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

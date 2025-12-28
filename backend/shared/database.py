@@ -1,0 +1,118 @@
+"""
+Database models and connection for user management and chat history
+"""
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime
+import config
+
+Base = declarative_base()
+
+# Database connection
+engine = create_engine(f"sqlite:///{config.DATABASE_PATH}", echo=False)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+class User(Base):
+    """User model for authentication"""
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, nullable=True)  # Optional, no unique constraint needed
+    hashed_password = Column(String, nullable=False)
+    is_admin = Column(Boolean, default=False)
+    can_upload = Column(Boolean, default=True)  # Add can_upload field
+    full_name = Column(String, nullable=True)  # Add full_name field
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
+    documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
+
+
+class Chat(Base):
+    """Chat conversation model"""
+    __tablename__ = "chats"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="chats")
+    messages = relationship("Message", back_populates="chat", cascade="all, delete-orphan")
+
+
+class Message(Base):
+    """Individual message in a chat"""
+    __tablename__ = "messages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    chat_id = Column(Integer, ForeignKey("chats.id"), nullable=False)
+    role = Column(String, nullable=False)  # "user" or "assistant"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    chat = relationship("Chat", back_populates="messages")
+
+
+class Document(Base):
+    """Uploaded document metadata"""
+    __tablename__ = "documents"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    file_type = Column(String, nullable=False)  # pdf, docx, pptx, txt
+    file_size = Column(Integer, nullable=False)  # in bytes
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    processed = Column(Boolean, default=False)  # Whether it's been indexed
+    title = Column(String, nullable=True)  # Add title field
+    chunk_count = Column(Integer, default=0)  # Add chunk_count field
+    
+    # Relationships
+    user = relationship("User", back_populates="documents")
+
+
+def init_db():
+    """Initialize database tables and create default admin user"""
+    Base.metadata.create_all(bind=engine)
+    
+    # Create default admin user if it doesn't exist
+    db = SessionLocal()
+    try:
+        from backend.api_server.auth import get_password_hash
+        
+        admin_user = db.query(User).filter(User.username == "admin").first()
+        if not admin_user:
+            admin_user = User(
+                username="admin",
+                email=None,  # No email needed
+                hashed_password=get_password_hash("admin"),
+                is_admin=True,
+                can_upload=True,
+                full_name="Administrator"
+            )
+            db.add(admin_user)
+            db.commit()
+            print("✓ Default admin user created (username: admin, password: admin)")
+    except Exception as e:
+        print(f"Error creating default admin user: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def get_db():
+    """Get database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
