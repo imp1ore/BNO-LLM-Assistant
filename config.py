@@ -92,7 +92,7 @@ LLM_SERVER_HOST = os.getenv("LLM_SERVER_HOST", "127.0.0.1")
 # APPLICATION CONFIGURATION
 # ============================================================================
 # Security
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+SECRET_KEY = os.getenv("SECRET_KEY", "verysecretivekey200")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 8  # Token expires after 8 hours (enterprise standard)
 SESSION_TIMEOUT_MINUTES = 30  # Auto-logout after 30 minutes of inactivity

@@ -78,6 +78,40 @@ You can create more accounts from the admin panel after logging in.
 
 Everything should work the same as on Windows.
 
+## Docker Setup (Recommended for Mac)
+
+If you're having issues running on Mac, use Docker instead.
+
+### Prerequisites
+- Docker Desktop installed (https://www.docker.com/products/docker-desktop)
+
+### Quick Start with Docker
+
+1. Build and start everything:
+```bash
+docker-compose up --build
+```
+
+2. Download the AI models (in a new terminal):
+```bash
+docker exec -it bno-ollama ollama pull hf.co/CompendiumLabs/bge-base-en-v1.5-gguf
+docker exec -it bno-ollama ollama pull hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF
+```
+
+3. Open in browser: http://127.0.0.1:9000
+
+### Stop the application:
+```bash
+docker-compose down
+```
+
+### View logs:
+```bash
+docker-compose logs -f
+```
+
+Your data (database, documents) is saved in the `data/` folder and persists between restarts.
+
 ## Troubleshooting
 
 Ollama not working:
