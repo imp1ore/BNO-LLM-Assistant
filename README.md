@@ -1,166 +1,149 @@
 # BNO LLM Assistant
 
 Version: Beta v1.0.0
+Internal RAG assistant for the e& Business Network Operations (BNO) department.
 
-A web application for uploading company documents and asking questions. The AI answers based on the documents you upload.
+A private web application for uploading internal documents and asking questions
+about them. The assistant answers **only** from the documents you upload — it does
+not use outside knowledge, and it says so when the answer is not in the documents.
 
-## What You Need
+Everything runs on-premises: documents, the database, the vector index, and the
+language model all stay on your server. Nothing is sent to any external API.
 
-- Python 3.8 or higher
-- Ollama installed on your computer
-- Two AI models downloaded (instructions below)
+---
 
-## Setup Instructions
+## How it works (architecture)
 
-### Step 1: Install Ollama
+A single Python (FastAPI) process serves the web UI, the API, and the RAG engine.
+It talks to a local **Ollama** instance for embeddings and text generation.
 
-Download from https://ollama.com and install it.
-
-### Step 2: Download the AI Models
-
-Open a terminal and run these commands:
-
-```bash
-ollama pull hf.co/CompendiumLabs/bge-base-en-v1.5-gguf
-ollama pull hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF
+```
+Browser ──HTTP──▶ FastAPI app (port 9000) ──▶ ChromaDB (vector search)
+                        │
+                        └──▶ Ollama (port 11434): embeddings + LLM
 ```
 
-This will take a few minutes. Wait for both to finish.
+- **One process** by design: SQLite + ChromaDB are not safe to share across
+  multiple workers, so the app runs as a single process. RAG runs *inside* the API
+  process — there is no separate model server to manage.
+- **Storage** lives under `data/`: `database.db` (users, chats, metadata),
+  `vectors/` (ChromaDB index), and `documents/` (uploaded files).
 
-### Step 3: Install Python Packages
+---
 
-```bash
-pip install -r requirements.txt
-```
-
-### Step 4: Start the Application
-
-On Windows:
-```bash
-scripts\start.bat
-```
-
-On Mac/Linux:
-```bash
-chmod +x scripts/start.sh
-./scripts/start.sh
-```
-
-This starts two servers:
-- LLM server on port 8000 (handles AI questions)
-- API server on port 9000 (handles everything else)
-
-### Step 5: Open in Browser
-
-Go to: http://127.0.0.1:9000
-
-## How to Use
-
-1. Login: Default admin account is username `admin` and password `admin`
-2. Upload Documents: Click "Upload Document" and select PDF, DOCX, PPTX, or TXT files
-3. Ask Questions: Type your question in the chat box and press Enter
-4. View History: Your chat conversations are saved in the sidebar
-
-## Default Admin Account
-
-- Username: `admin`
-- Password: `admin`
-
-You can create more accounts from the admin panel after logging in.
-
-## Running on Mac
-
-1. Install Python 3.8+ and Ollama
-2. Download the models (Step 2 above)
-3. Install packages: `pip install -r requirements.txt`
-4. Run: `./scripts/start.sh`
-5. Open: http://127.0.0.1:9000
-
-Everything should work the same as on Windows.
-
-## Docker Setup (Recommended for Mac)
-
-If you're having issues running on Mac, use Docker instead.
+## Quick start (local)
 
 ### Prerequisites
-- Docker Desktop installed (https://www.docker.com/products/docker-desktop)
 
-### Quick Start with Docker
+- Python 3.10+
+- [Ollama](https://ollama.com) installed and running
+- The two models the app uses (pulled below)
 
-1. Build and start everything:
+### Steps
+
 ```bash
-docker-compose up --build
+# 1. Pull the models
+ollama pull hf.co/CompendiumLabs/bge-base-en-v1.5-gguf   # embeddings
+ollama pull llama3.2:3b                                   # generation
+
+# 2. Install Python dependencies
+pip install -r requirements.txt
+
+# 3. (Optional but recommended) configure environment
+cp .env.example .env        # then edit SECRET_KEY / ADMIN_PASSWORD
+
+# 4. Start the app
+./scripts/start.sh          # macOS / Linux
+scripts\start.bat           # Windows
 ```
 
-2. Download the AI models (in a new terminal):
-```bash
-docker exec -it bno-ollama ollama pull hf.co/CompendiumLabs/bge-base-en-v1.5-gguf
-docker exec -it bno-ollama ollama pull hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF
+Then open <http://127.0.0.1:9000> and log in with the admin account
+(default `admin` / `admin` unless you set `ADMIN_PASSWORD` in `.env`).
+
+> **Deploying to the BNO server?** Follow [`DEPLOYMENT.md`](DEPLOYMENT.md) — it has
+> the full RHEL + systemd setup, firewall/port notes, and a security checklist.
+
+---
+
+## First login & accounts
+
+- On first startup the app creates one admin account from `ADMIN_USERNAME` /
+  `ADMIN_PASSWORD` (defaults to `admin` / `admin` — **change this for any real use**).
+- Admins create the other accounts from the **Admin** screen and grant the
+  **Upload** and/or **Admin** permissions per user.
+- Self-registration is **off** by default (`ALLOW_REGISTRATION=false`). Turn it on
+  only if you want anyone who can reach the app to create their own login.
+- Users can change their own password (**Change Password** in the top bar); admins
+  can reset passwords and delete users from the Admin screen.
+
+To reset the admin password manually: `python scripts/create_admin.py`.
+
+---
+
+## Using it
+
+1. **Upload documents** — open **Documents**, then drag & drop or click to upload
+   (PDF, DOCX, PPTX, TXT; up to 50 MB each). Documents are shared across users.
+2. **Ask questions** — type in the chat box. Answers come only from the uploaded
+   documents; conversations are saved in the sidebar.
+
+---
+
+## Project structure
+
+```
+BNOLLM/
+├── backend/
+│   ├── api_server/     # FastAPI app: auth, chat, documents, admin (port 9000)
+│   ├── llm_server/     # rag_engine.py — retrieval + generation (in-process)
+│   ├── shared/         # llm_providers, vector_db, database, document_processor
+│   ├── middleware/     # logging + error handling
+│   └── utils/          # logging + custom exceptions
+├── frontend/           # Single-page web UI (HTML/CSS/JS)
+├── scripts/            # start/stop + admin helper scripts
+├── deploy/             # systemd unit for production
+├── data/               # database, vectors, uploaded documents (created at runtime)
+├── logs/               # application logs
+├── config.py           # all configuration (overridable via .env)
+├── requirements.txt
+├── DEPLOYMENT.md       # server deployment guide
+└── .env.example        # environment template
 ```
 
-3. Open in browser: http://127.0.0.1:9000
+---
 
-### Stop the application:
-```bash
-docker-compose down
-```
+## Configuration
 
-### View logs:
-```bash
-docker-compose logs -f
-```
+All settings live in `config.py` and can be overridden with environment variables
+(via a `.env` file). The most important ones:
 
-Your data (database, documents) is saved in the `data/` folder and persists between restarts.
+| Setting | Purpose | Default |
+|---|---|---|
+| `SECRET_KEY` | JWT signing key — **set a random value in production** | dev default (warns) |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | First admin account | `admin` / `admin` |
+| `ALLOW_REGISTRATION` | Public self-registration | `false` |
+| `MIN_PASSWORD_LENGTH` | Password policy | `8` |
+| `API_SERVER_HOST` / `API_SERVER_PORT` | Where the app listens | `127.0.0.1` / `9000` |
+| `OLLAMA_BASE_URL` | Ollama endpoint | `http://localhost:11434` |
+| `SIMILARITY_THRESHOLD` | Min relevance to use a chunk | `0.3` |
+| `CORS_ORIGINS` | Allowed browser origins | localhost:9000 |
+
+---
 
 ## Troubleshooting
 
-Ollama not working:
-- Make sure Ollama is running: open Ollama app or run `ollama list` in terminal
-- Check that both models downloaded: `ollama list` should show both models
+| Symptom | Fix |
+|---|---|
+| "Could not connect to Ollama" | Start Ollama (`ollama serve` / `systemctl start ollama`); check `OLLAMA_BASE_URL` |
+| Answers always "I don't have that information" | No documents uploaded yet, or `SIMILARITY_THRESHOLD` too high |
+| Port 9000 in use | Change `API_SERVER_PORT`, or stop whatever owns the port |
+| Can't reach app from another machine | Set `API_SERVER_HOST=0.0.0.0` and open the port in the firewall |
+| Login fails after restart | `SECRET_KEY` changed — existing tokens are invalidated; just log in again |
 
-Port already in use:
-- Close other programs using ports 8000 or 9000
-- Or change the ports in `config.py`
+Logs: `tail -f logs/bno_llm_*.log`
 
-Can't install packages:
-- Make sure you have Python 3.8 or higher: `python --version`
-- Try: `pip install --upgrade pip` then `pip install -r requirements.txt`
-
-Documents not uploading:
-- Only PDF, DOCX, PPTX, and TXT files are supported
-- Maximum file size is 50MB
-
-## Manual Server Start (if scripts don't work)
-
-Open two terminal windows.
-
-Terminal 1 - LLM Server:
-```bash
-python -m backend.llm_server.main
-```
-
-Terminal 2 - API Server:
-```bash
-python -m backend.api_server.main
-```
-
-Then open http://127.0.0.1:9000 in your browser.
-
-## Project Files
-
-- `backend/api_server/` - Main web server code
-- `backend/llm_server/` - AI question answering code
-- `frontend/` - Web interface files
-- `data/database.db` - User accounts and chat history
-- `data/documents/` - Uploaded documents
-- `config.py` - Settings (ports, file sizes, etc.)
-
-## Notes
-
-- All documents are shared between users who have upload access
-- Chat history is saved per user
-- The database and documents are stored in the `data/` folder
+---
 
 ## License
 
-Internal use for e& Business Network Operations department.
+Internal use for the e& Business Network Operations department.

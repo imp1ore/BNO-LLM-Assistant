@@ -1,5 +1,7 @@
-// API Configuration
-const API_BASE_URL = 'http://127.0.0.1:9000/api';
+// API Configuration – use same origin when frontend is served by API server (e.g. Docker/production)
+const API_BASE_URL = (typeof window !== 'undefined' && window.location.origin)
+  ? `${window.location.origin}/api`
+  : 'http://127.0.0.1:9000/api';
 
 // Global state
 let currentUser = null;
@@ -98,90 +100,69 @@ async function createUser() {
 window.createUser = createUser;
 
 // ============================================================================
-// Global Functions (accessible from HTML onclick)
+// Change Password (self-service)
 // ============================================================================
-// Create User function - must be defined at top level for onclick handlers
-async function createUser() {
-    console.log('createUser called'); // Debug log
-    if (!userIsAdmin) {
-        showNotification('Admin access required', 'error');
+function openChangePassword() {
+    const modal = document.getElementById('changePasswordModal');
+    if (!modal) return;
+    const err = document.getElementById('cpError');
+    if (err) { err.style.display = 'none'; err.textContent = ''; }
+    ['cpOldPassword', 'cpNewPassword', 'cpConfirmPassword'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    modal.classList.add('active');
+}
+window.openChangePassword = openChangePassword;
+
+function closeChangePassword() {
+    const modal = document.getElementById('changePasswordModal');
+    if (modal) modal.classList.remove('active');
+}
+window.closeChangePassword = closeChangePassword;
+
+async function submitChangePassword() {
+    const oldPassword = document.getElementById('cpOldPassword')?.value || '';
+    const newPassword = document.getElementById('cpNewPassword')?.value || '';
+    const confirmPassword = document.getElementById('cpConfirmPassword')?.value || '';
+    const err = document.getElementById('cpError');
+    const btn = document.getElementById('cpSubmitBtn');
+
+    const showErr = (msg) => {
+        if (err) { err.textContent = msg; err.style.display = 'block'; }
+    };
+
+    if (!oldPassword || !newPassword) {
+        showErr('Please fill in all fields.');
         return;
     }
-    
-    const usernameEl = document.getElementById('newUserUsername');
-    const passwordEl = document.getElementById('newUserPassword');
-    const fullNameEl = document.getElementById('newUserFullName');
-    const canUploadEl = document.getElementById('newUserCanUpload');
-    const isAdminEl = document.getElementById('newUserIsAdmin');
-    
-    if (!usernameEl || !passwordEl) {
-        console.error('Form elements not found');
-        showNotification('Form elements not found. Please refresh the page.', 'error');
+    if (newPassword !== confirmPassword) {
+        showErr('New passwords do not match.');
         return;
     }
-    
-    const username = usernameEl.value?.trim();
-    const password = passwordEl.value;
-    const fullName = fullNameEl?.value?.trim();
-    const canUpload = canUploadEl?.checked || false;
-    const isAdmin = isAdminEl?.checked || false;
-    
-    // Validation
-    if (!username || !password) {
-        showNotification('Username and password are required', 'error');
-        return;
-    }
-    
-    if (username.length < 3) {
-        showNotification('Username must be at least 3 characters', 'error');
-        return;
-    }
-    
-    if (password.length < 3) {
-        showNotification('Password must be at least 3 characters', 'error');
-        return;
-    }
-    
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Updating...'; }
     try {
-        console.log('Sending request to create user:', { username, canUpload, isAdmin });
-        const response = await secureFetch(`${API_BASE_URL}/admin/users`, {
+        const response = await secureFetch(`${API_BASE_URL}/auth/change-password`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                username: username,
-                password: password,
-                full_name: fullName || null,
-                can_upload: canUpload,
-                is_admin: isAdmin
-            })
+            body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
         });
-        
         if (response.ok) {
-            const newUser = await response.json();
-            showNotification(`User "${newUser.username}" created successfully!`, 'success');
-            
-            // Clear form
-            usernameEl.value = '';
-            passwordEl.value = '';
-            if (fullNameEl) fullNameEl.value = '';
-            if (canUploadEl) canUploadEl.checked = false;
-            if (isAdminEl) isAdminEl.checked = false;
-            
-            // Reload users list
-            loadUsers();
+            closeChangePassword();
+            showNotification('Password changed successfully.', 'success');
         } else {
-            const errorData = await response.json().catch(() => ({ detail: 'Failed to create user' }));
-            console.error('Error response:', errorData);
-            showNotification(errorData.detail || 'Failed to create user', 'error');
+            const data = await response.json().catch(() => ({ detail: 'Failed to change password' }));
+            showErr(data.detail || 'Failed to change password.');
         }
     } catch (error) {
-        console.error('Error creating user:', error);
-        showNotification('Error creating user. Please try again.', 'error');
+        console.error('Error changing password:', error);
+        showErr('Connection error. Please try again.');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
     }
 }
-
-// Make it globally accessible
-window.createUser = createUser;
+window.submitChangePassword = submitChangePassword;
 
 // ============================================================================
 // Session Management (Enterprise Standard)
@@ -851,19 +832,44 @@ function renderChats(chats) {
 }
 
 function formatTime(dateString) {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
+    if (!dateString) return 'Unknown';
     
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+    try {
+        // Parse the date string (handles ISO format from server)
+        const date = new Date(dateString);
+        
+        // Check if date is valid
+        if (isNaN(date.getTime())) {
+            return 'Invalid date';
+        }
+        
+        const now = new Date();
+        const diffMs = now - date;
+        
+        // Handle negative differences (future dates) - shouldn't happen but just in case
+        if (diffMs < 0) {
+            return 'Just now';
+        }
+        
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+        
+        // For older dates, show formatted date
+        return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric', 
+            year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+        });
+    } catch (e) {
+        console.error('Error formatting date:', e, dateString);
+        return 'Invalid date';
+    }
 }
 
 async function loadChat(chatId) {
@@ -998,11 +1004,20 @@ async function sendMessage() {
     // Add user message
     addMessage('user', message);
     
+    // Show "thinking" indicator
+    const thinkingId = 'thinking-' + Date.now();
+    addMessage('assistant', '...', false);
+    const thinkingMsg = document.querySelector('.message.assistant:last-child');
+    if (thinkingMsg) {
+        thinkingMsg.id = thinkingId;
+        thinkingMsg.querySelector('.message-content').innerHTML = '<div class="loading" style="margin: 0 auto;"></div><span style="margin-left: 8px; color: #666;">Thinking...</span>';
+    }
+    
     // Disable send button
     const sendBtn = document.getElementById('sendBtn');
     if (sendBtn) {
         sendBtn.disabled = true;
-        sendBtn.textContent = 'Sending...';
+        sendBtn.innerHTML = '<div class="loading" style="width: 16px; height: 16px; margin: 0 auto;"></div>';
     }
     
     try {
@@ -1042,6 +1057,12 @@ async function sendMessage() {
                 if (emptyState) emptyState.remove();
             }
             
+            // Remove thinking indicator
+            const thinkingEl = document.getElementById(thinkingId);
+            if (thinkingEl) {
+                thinkingEl.remove();
+            }
+            
             // Add AI response - check if response exists
             const aiResponse = data.response || data.assistant_reply?.content || data.answer || '';
             if (!aiResponse || aiResponse.trim() === '') {
@@ -1056,16 +1077,26 @@ async function sendMessage() {
                 chatScreenEl.style.display = 'flex';
             }
         } else {
+            // Remove thinking indicator
+            const thinkingEl = document.getElementById(thinkingId);
+            if (thinkingEl) {
+                thinkingEl.remove();
+            }
             const errorData = await response.json().catch(() => ({ detail: 'Failed to send message' }));
             addMessage('assistant', `Error: ${errorData.detail || 'Failed to send message'}`);
         }
     } catch (error) {
+        // Remove thinking indicator
+        const thinkingEl = document.getElementById(thinkingId);
+        if (thinkingEl) {
+            thinkingEl.remove();
+        }
         console.error('Error sending message:', error);
         addMessage('assistant', 'Error: Failed to send message. Please try again.');
     } finally {
         if (sendBtn) {
             sendBtn.disabled = false;
-            sendBtn.textContent = 'Send';
+            sendBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
         }
     }
 }
@@ -1173,17 +1204,39 @@ function renderDocuments(documents) {
         return;
     }
     
-    documents.forEach(doc => {
+    // Sort documents by upload date (newest first)
+    const sortedDocs = [...documents].sort((a, b) => {
+        const dateA = new Date(a.uploaded_at || 0);
+        const dateB = new Date(b.uploaded_at || 0);
+        return dateB - dateA;
+    });
+    
+    sortedDocs.forEach(doc => {
         const docItem = document.createElement('div');
         docItem.className = 'document-item';
+        
+        // Show title if available, otherwise filename
+        const displayName = doc.title || doc.filename;
+        const statusIcon = doc.processed ? '✓' : '⏳';
+        const statusText = doc.processed ? 'Indexed' : 'Processing';
+        
         docItem.innerHTML = `
             <div class="document-info">
-                <div class="document-name">${escapeHtml(doc.filename)}</div>
+                <div class="document-header">
+                    <span class="document-name">${escapeHtml(displayName)}</span>
+                    <span class="document-status ${doc.processed ? 'processed' : 'processing'}">
+                        ${statusIcon} ${statusText}
+                    </span>
+                </div>
                 <div class="document-meta">
-                    ${formatFileSize(doc.file_size)} • ${formatTime(doc.uploaded_at)} • ${doc.chunk_count || 0} chunks
+                    <span class="meta-item">${formatFileSize(doc.file_size)}</span>
+                    <span class="meta-separator">•</span>
+                    <span class="meta-item">${doc.chunk_count || 0} chunks</span>
                 </div>
             </div>
-            <button class="delete-doc-btn" onclick="deleteDocument(${doc.id})">Delete</button>
+            <button class="delete-doc-btn" onclick="deleteDocument(${doc.id})" title="Delete document">
+                🗑️
+            </button>
         `;
         docsList.appendChild(docItem);
     });
@@ -1223,7 +1276,30 @@ async function loadDocStats() {
             const stats = await response.json();
             const statsEl = document.getElementById('docStats');
             if (statsEl) {
-                statsEl.textContent = `${stats.total_documents || 0} documents • ${stats.total_chunks || 0} chunks indexed`;
+                // Show both SQL and vector DB counts if available
+                let statsText = `${stats.total_documents || 0} documents`;
+                
+                if (stats.total_chunks_in_vector_db !== undefined && stats.total_chunks_in_vector_db !== null) {
+                    // Show actual vector DB count
+                    statsText += ` • ${stats.total_chunks_in_vector_db} chunks in vector DB`;
+                    
+                    // Show warning if mismatch
+                    if (stats.vector_db_synced === false) {
+                        statsText += ` ⚠️ (SQL shows ${stats.total_chunks || 0} chunks - mismatch!)`;
+                        statsEl.style.color = '#d32f2f';
+                        statsEl.style.fontWeight = '600';
+                    } else {
+                        statsEl.style.color = '';
+                        statsEl.style.fontWeight = '';
+                    }
+                } else {
+                    // Fallback to SQL count
+                    statsText += ` • ${stats.total_chunks || 0} chunks indexed`;
+                    statsEl.style.color = '';
+                    statsEl.style.fontWeight = '';
+                }
+                
+                statsEl.textContent = statsText;
             }
         }
     } catch (error) {
@@ -1406,23 +1482,72 @@ function renderUsers(users) {
     users.forEach(user => {
         const userItem = document.createElement('div');
         userItem.className = 'user-item';
+        const isSelf = currentUser && currentUser.id === user.id;
         userItem.innerHTML = `
             <div class="user-info">
                 <div class="user-name">${escapeHtml(user.full_name || user.username)}</div>
                 <div class="user-meta">${escapeHtml(user.username)} ${user.is_admin ? '(Admin)' : ''}</div>
             </div>
-            <div class="user-actions">
+            <div class="user-actions" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
                 <label class="toggle-switch">
                     <input type="checkbox" ${user.can_upload ? 'checked' : ''} 
                            onchange="updateUserPermission(${user.id}, this.checked)">
                     <span class="toggle-slider"></span>
                 </label>
                 <span class="toggle-label">Can Upload</span>
+                <button class="btn-small" onclick="adminResetPassword(${user.id}, '${escapeHtml(user.username)}')">Reset Password</button>
+                <button class="btn-small danger" onclick="adminDeleteUser(${user.id}, '${escapeHtml(user.username)}')" ${isSelf ? 'disabled title="You cannot delete your own account"' : ''}>Delete</button>
             </div>
         `;
         usersList.appendChild(userItem);
     });
 }
+
+async function adminResetPassword(userId, username) {
+    const newPassword = prompt(`Enter a new password for "${username}":`);
+    if (newPassword === null) return; // cancelled
+    if (!newPassword.trim()) {
+        showNotification('Password cannot be empty.', 'error');
+        return;
+    }
+    try {
+        const response = await secureFetch(`${API_BASE_URL}/admin/users/${userId}/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_password: newPassword })
+        });
+        if (response.ok) {
+            showNotification(`Password reset for "${username}".`, 'success');
+        } else {
+            const data = await response.json().catch(() => ({ detail: 'Failed to reset password' }));
+            showNotification(data.detail || 'Failed to reset password.', 'error');
+        }
+    } catch (error) {
+        console.error('Error resetting password:', error);
+        showNotification('Error resetting password.', 'error');
+    }
+}
+window.adminResetPassword = adminResetPassword;
+
+async function adminDeleteUser(userId, username) {
+    if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+    try {
+        const response = await secureFetch(`${API_BASE_URL}/admin/users/${userId}`, {
+            method: 'DELETE'
+        });
+        if (response.ok) {
+            showNotification(`User "${username}" deleted.`, 'success');
+            loadUsers();
+        } else {
+            const data = await response.json().catch(() => ({ detail: 'Failed to delete user' }));
+            showNotification(data.detail || 'Failed to delete user.', 'error');
+        }
+    } catch (error) {
+        console.error('Error deleting user:', error);
+        showNotification('Error deleting user.', 'error');
+    }
+}
+window.adminDeleteUser = adminDeleteUser;
 
 async function updateUserPermission(userId, canUpload) {
     try {

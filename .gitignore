@@ -15,6 +15,7 @@ ENV/
 *.swp
 *.swo
 *~
+.cursor/
 
 # OS
 .DS_Store
@@ -22,10 +23,13 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+*.log.*
 
 # Environment
 .env
 .env.local
+.env.*.local
 
 # Models (if stored locally)
 models/
@@ -36,3 +40,27 @@ models/
 *.tmp
 *.temp
 
+# Data (keep structure, ignore content)
+data/documents/*
+!data/documents/.gitkeep
+data/vectors/*
+!data/vectors/.gitkeep
+data/*.db
+!data/.gitkeep
+
+# Test outputs
+tests/test_report.json
+tests/*.log
+
+# Documentation builds
+docs/_build/
+docs/.doctrees/
+
+# Coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Debug files
+debug.log
+.cursor/debug.log

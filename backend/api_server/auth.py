@@ -26,6 +26,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+def validate_password_strength(password: str) -> Optional[str]:
+    """Validate a password against the policy.
+
+    Returns an error message string if invalid, or None if the password is OK.
+    """
+    if password is None or not isinstance(password, str):
+        return "Password is required"
+    min_len = getattr(config, "MIN_PASSWORD_LENGTH", 8)
+    if len(password) < min_len:
+        return f"Password must be at least {min_len} characters"
+    if password.strip() == "":
+        return "Password cannot be blank"
+    return None
+
+
 def get_password_hash(password: str) -> str:
     """Hash a password using direct bcrypt"""
     try:

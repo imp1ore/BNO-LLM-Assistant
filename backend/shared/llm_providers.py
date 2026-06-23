@@ -3,13 +3,15 @@ LLM Provider abstraction layer
 Switch between different LLM providers easily (Ollama, OpenAI, etc.)
 """
 from typing import List, Dict, Any
+import re
 import config
+import json
+from pathlib import Path
 
 # Initialize providers lazily
 _ollama_client = None
 _openai_client = None
 _anthropic_client = None
-
 
 def get_embedding(text: str) -> List[float]:
     """Get embedding vector for text based on configured provider"""
@@ -41,19 +43,91 @@ def _get_ollama_embedding(text: str) -> List[float]:
     global _ollama_client
     if _ollama_client is None:
         import ollama
-        _ollama_client = ollama
+        # Initialize client with base URL from config
+        base_url = config.OLLAMA_CONFIG.get("base_url", "http://localhost:11434")
+        _ollama_client = ollama.Client(host=base_url)
     
-    response = _ollama_client.embed(
+    # Use embeddings method (plural) with prompt parameter
+    response = _ollama_client.embeddings(
         model=config.OLLAMA_CONFIG["embedding_model"],
-        input=text
+        prompt=text
     )
-    return response['embeddings'][0]
+    # embeddings() returns a dict with 'embedding' key containing the list
+    return response['embedding']
 
 
 def _clean_response(response: str) -> str:
-    """Clean response to aggressively remove repetition and formatting issues"""
+    """Clean response to remove repetition and formatting issues"""
     if not response:
         return response
+    
+    # Fix repetition bug - detect and remove repeated rejection messages
+    # This happens when the LLM generates numbered lists with repeated rejection messages
+    response_lower = response.lower()
+    rejection_phrase = "i don't have that information in the available documents"
+    rejection_count = response_lower.count(rejection_phrase)
+    
+    # If rejection phrase appears more than once, it's likely a repetition bug
+    if rejection_count > 1:
+        # Remove all but the first occurrence
+        first_occurrence = response_lower.find(rejection_phrase)
+        if first_occurrence != -1:
+            # Find the end of the first occurrence
+            first_end = first_occurrence + len(rejection_phrase)
+            # Keep everything before first occurrence, then remove all subsequent occurrences
+            before_first = response[:first_occurrence]
+            after_first = response[first_end:]
+            # Remove all subsequent occurrences
+            after_first_cleaned = re.sub(
+                re.escape("I don't have that information in the available documents"),
+                '',
+                after_first,
+                flags=re.IGNORECASE
+            )
+            # Also remove numbered list items that are just rejection messages
+            lines = after_first_cleaned.split('\n')
+            cleaned_lines = []
+            for line in lines:
+                line_stripped = line.strip()
+                # Skip lines that are just numbers followed by rejection message
+                if re.match(r'^\d+\.?\s*(I don\'t have that information|I don\'t have information)', line_stripped, re.IGNORECASE):
+                    continue
+                cleaned_lines.append(line)
+            response = before_first + "I don't have that information in the available documents." + '\n'.join(cleaned_lines)
+            response = re.sub(r'\s+', ' ', response).strip()
+    
+    response_lower = response.lower()
+    
+    # NOTE: Aggressive phrase/sentence scrubbing and the "misinterpretation ->
+    # refuse" logic were removed here. They were overfit to the original sample
+    # documents and deleted legitimate content from real documents (and forced
+    # false "I don't have that information" answers). Grounding is enforced by
+    # retrieval (similarity threshold) and the system prompt instead, so the
+    # cleaner now only fixes formatting and de-duplication.
+
+    # Remove all markdown symbols
+    # Remove double asterisks first
+    response = re.sub(r'\*\*([^*]+)\*\*', r'\1', response)
+    # Remove single asterisks (italic markdown *text* or bullets *)
+    response = re.sub(r'\*([^*\n]+)\*', r'\1', response)  # Remove *text* but keep text
+    response = response.replace('*', '')  # Remove any remaining asterisks
+    # Remove hash symbols used for headings
+    response = re.sub(r'^#+\s*', '', response, flags=re.MULTILINE)  # Remove # at start of lines
+    response = response.replace('###', '')
+    response = response.replace('##', '')
+    response = response.replace('#', '')
+    # Remove markdown dashes used for bullets (but keep regular dashes in text)
+    lines = response.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        # Remove leading dashes used for bullets (like "- Item")
+        stripped = line.lstrip()
+        if stripped.startswith('- ') and len(stripped) > 2:
+            # Remove the dash, keep the content
+            cleaned_lines.append(line.replace('- ', '', 1))
+        else:
+            cleaned_lines.append(line)
+    response = '\n'.join(cleaned_lines)
     
     lines = response.split('\n')
     cleaned_lines = []
@@ -98,26 +172,13 @@ def _clean_response(response: str) -> str:
             
             seen_numbered_items[content_sig] = True
         
-        # Check for duplicate content blocks (similar meaning) - more aggressive
+        # Drop only EXACT duplicate lines (safe). Fuzzy 60%-overlap de-duplication
+        # was removed because it dropped distinct lines that merely shared words.
         content_sig_full = ' '.join(line_lower.split())
-        
-        # Skip if we've seen very similar content before (lower threshold for duplicates)
-        is_duplicate = False
-        for seen_sig in seen_content_signatures:
-            seen_words = set(seen_sig.split())
-            current_words = set(content_sig_full.split())
-            # If more than 60% of words overlap (lowered from 70%), consider it a duplicate
-            if len(seen_words) > 0 and len(current_words) > 0:
-                overlap = len(seen_words & current_words) / max(len(seen_words), len(current_words))
-                if overlap > 0.6 and len(content_sig_full) > 15:  # Lower threshold, shorter minimum
-                    is_duplicate = True
-                    break
-        
-        if is_duplicate:
+        if content_sig_full in seen_content_signatures:
             i += 1
             continue
-        
-        # Add the line if it's not a duplicate
+
         cleaned_lines.append(line)
         seen_content_signatures.add(content_sig_full)
         i += 1
@@ -149,30 +210,11 @@ def _clean_response(response: str) -> str:
     
     cleaned = '\n'.join(final_lines).strip()
     
-    # Additional pass: Remove items that are clearly not commands (like "Update documentation", "Network Security", etc.)
-    # These are section headers, not commands
-    final_cleaned_lines = []
-    non_command_patterns = [
-        'update documentation', 'network security', 'access control', 'incident response',
-        'privileged access', 'security checklist', 'common network commands',
-        'network device ip ranges', 'standard ip addressing', 'geographically diverse',
-        'appendices', 'appendix', 'useful commands for', 'these commands are useful',
-        'the exact syntax may vary'
-    ]
-    
-    for line in cleaned.split('\n'):
-        line_lower = line.strip().lower()
-        # Skip lines that are clearly section headers or metadata, not actual commands
-        is_non_command = any(pattern in line_lower for pattern in non_command_patterns)
-        # Also skip if it's just a number with no actual command (like "1. Update documentation")
-        if is_non_command and (line_lower.startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')) or 
-                              not any(word in line_lower for word in ['show', 'block', 'unblock', 'ping', 'traceroute', 'firewall', 'access', 'session', 'login', 'security', 'event', 'log', 'route', 'interface', 'arp', 'config'])):
-            continue
-        final_cleaned_lines.append(line)
-    
-    cleaned = '\n'.join(final_cleaned_lines).strip()
-    
-    # CRITICAL: Remove contradictory phrases like "I don't have that information" if the response already contains actual information
+    # NOTE: A "remove non-command lines" pass was removed here - it deleted
+    # legitimate answer lines (section headers, policy text) for any document
+    # that isn't about CLI commands.
+
+    # Remove contradictory phrases if the response already contains actual information
     # This happens when the LLM provides the answer but then adds this phrase at the end
     if cleaned and len(cleaned) > 50:  # If response has substantial content
         # Check if it ends with contradictory phrases
@@ -197,127 +239,34 @@ def _clean_response(response: str) -> str:
                     cleaned = cleaned.rstrip('.,;:')
                     break
     
-    # If response is still too long (more than 1500 characters), truncate it more aggressively
-    if len(cleaned) > 1500:
-        # Try to find a good stopping point (end of a sentence or list item)
-        truncated = cleaned[:1500]
-        last_period = truncated.rfind('.')
-        last_newline = truncated.rfind('\n')
-        cut_point = max(last_period, last_newline)
-        if cut_point > 1000:  # Only truncate if we can find a good stopping point
-            cleaned = truncated[:cut_point + 1]
-    
+    # NOTE: Hard 1500-char truncation removed - it could cut off legitimate
+    # long answers mid-content. Output length is already bounded by the model's
+    # num_predict setting.
+
     return cleaned
 
 
 def _generate_ollama_response(prompt: str, context: str = None, **kwargs) -> str:
-    """Generate response using Ollama - using chat API like the guide"""
+    """Generate response using Ollama"""
     global _ollama_client
+    
     if _ollama_client is None:
         import ollama
-        _ollama_client = ollama
+        base_url = config.OLLAMA_CONFIG.get("base_url", "http://localhost:11434")
+        _ollama_client = ollama.Client(host=base_url)
     
-    # Build system prompt for BNO network assistant
     if context:
-        # Use chat API with system message (like the guide)
-        system_prompt = """You are a helpful network assistant for e&'s Business Network Operations (BNO) department. 
-Your role is to assist with network operations, troubleshooting, and answering questions based ONLY on company documents and knowledge base.
+        # Simplified prompt - less overloaded
+        system_prompt = """You are an assistant for e&'s Business Network Operations (BNO) team. Answer questions using ONLY the information in the provided documents.
 
-CRITICAL RULES:
-1. FIRST, carefully read the entire context provided below. Look for information that answers the question, even if it's phrased differently or uses synonyms.
-2. If the answer IS in the context (or related information that answers the question): Extract and provide ALL relevant details from the context. Be thorough and complete.
-3. The context may contain the answer using different words or phrases - look for the MEANING, not exact word matches.
-4. EXPLAIN information in your own words - synthesize the context and present it clearly and naturally. Do not just copy text verbatim.
-5. ALWAYS provide COMPLETE responses - finish all sentences, complete all lists, and ensure nothing is cut off mid-thought. Never leave responses incomplete.
-6. If the answer is truly NOT in the context (after thoroughly checking): Respond with ONLY this exact phrase: "I don't have that information in the available documents." Do NOT add any explanations, general knowledge, or examples.
-7. DO NOT use information from outside the context, even if you think it's common knowledge.
-8. DO NOT provide generic explanations if the specific information isn't in the context.
-
-RESPONSE FORMATTING - ABSOLUTELY CRITICAL - FOLLOW THESE EXACTLY:
-- Write in plain text only. NO markdown symbols whatsoever.
-- NEVER use asterisks (*) or double asterisks (**) for any purpose - NOT for bold, NOT for bullets, NOT for anything
-- NEVER use hash symbols (#) - NOT for headings (###), NOT for anything
-- NEVER use dashes (---) as section separators
-- NEVER use single dashes (-) for bullets - use numbered lists (1., 2., 3.) instead
-- NEVER use underscores (_) for formatting
-- NEVER use bold, italics, or any text formatting symbols
-- Write everything in plain text with natural paragraphs and simple numbered lists
-
-CRITICAL RULES - ABSOLUTELY NO REPETITION - BE CONCISE:
-1. NO REPETITION: Each piece of information appears EXACTLY ONCE in your entire response. If you list items, list them ONCE only. Never repeat the same item or information anywhere in your response.
-2. BE CONCISE: Keep responses short and focused. If asked for a list of commands, provide ONLY the commands (e.g., "Show Access Lists", "Show Firewall Rules") - do NOT repeat the same command multiple times with different wording. Maximum 10-15 items in any list.
-3. NO DUPLICATE SECTIONS: Do not create multiple sections covering the same topic. One section per topic only.
-4. NO REPEATED HEADINGS: Do NOT create multiple headings like "1. The commands are:", "2. The commands are:", "3. The commands are:" - this is WRONG. Use ONE heading like "The commands are:" followed by ONE numbered list.
-5. NO REPEATED LISTS: If you've already listed items in one format, do NOT list them again in another format. Do NOT say "Commands include:" and then later say "The commands are:" with the same content.
-6. SIMPLE STRUCTURE: One clear answer, organized logically. No redundant sections. Maximum 10-15 items in a list - if you find yourself repeating, STOP.
-7. CONSOLIDATE INFORMATION: If multiple sections would cover similar content, combine them into one clear section instead. Do not create separate sections that repeat the same information.
-8. NO DOCUMENT HEADERS: Do not include document titles, headers, appendix names, or metadata (like "Appendices A:", "Appendices B:", "e& Business Network Operations Guide") - only provide the actual answer content.
-9. NO REDUNDANT DESCRIPTIONS: If listing commands, just list the command names. Do NOT repeat "The exact syntax may vary..." for every single item - say it once at the end if needed.
-
-EXAMPLE OF WRONG FORMAT (NEVER DO THIS):
-"The steps to show access lists are:
-1. Information Gathering
-2. Initial Diagnosis
-3. Remote Diagnostics
-
-Steps include:
-1. Information Gathering
-2. Initial Diagnosis
-3. Remote Diagnostics
-
-1. The steps are: Information Gathering
-2. The steps are: Initial Diagnosis
-3. The steps are: Remote Diagnostics"
-
-EXAMPLE OF CORRECT FORMAT:
-"The steps to show access lists are:
-
-1. Information Gathering: Collect details about the issue including symptoms, affected services, time of occurrence, and any recent changes.
-
-2. Initial Diagnosis: Review network monitoring data, check device status, and analyze recent logs to identify potential causes.
-
-3. Remote Diagnostics: Perform connectivity tests, check routing, and verify service configuration using remote tools.
-
-4. On-Site Visit: If remote resolution is not possible, schedule an on-site visit to investigate further."
-
-FORMATTING GUIDELINES:
-- Write in natural, flowing paragraphs
-- Use section headings in plain text with a colon (e.g., "Troubleshooting Workflow:" or "Connectivity Issues:")
-- Do NOT number section headings (use "Troubleshooting Workflow:" not "1. Troubleshooting Workflow:")
-- Do NOT use asterisks (*) for bullets - use numbered lists (1., 2., 3.) instead
-- Do NOT use dashes (-) for bullets - use numbered lists (1., 2., 3.) instead
-- Do NOT use double asterisks (**) for bold - just write the text normally
-- Use numbered lists (1., 2., 3.) ONLY for sequential steps or items
-- When listing steps, use format: "The steps are:" or "Steps include:" followed by numbered list (1., 2., 3.)
-- Keep it simple: One clear answer, one logical structure, no repetition
-- Do NOT include document headers or metadata in your response - only provide the actual answer
-
-CORRECT FORMAT EXAMPLE:
-"The troubleshooting workflow in BNO involves the following steps:
-
-1. Information Gathering: Collect details about the issue including symptoms, affected services, time of occurrence, and any recent changes.
-
-2. Initial Diagnosis: Review network monitoring data, check device status, and analyze recent logs to identify potential causes.
-
-3. Remote Diagnostics: Perform connectivity tests, check routing, and verify service configuration using remote tools.
-
-4. On-Site Visit: If remote resolution is not possible, schedule an on-site visit to investigate further."
-
-WRONG FORMAT (NEVER DO THIS):
-- "1. **Information Gathering**: ..." (no bold, no numbered headings)
-- "* Information Gathering: ..." (no asterisks for bullets)
-- "- Information Gathering: ..." (no dashes for bullets - use numbered lists)
-- "**Information Gathering**" (no markdown bold)
-- Repeating the same information in multiple sections
-- Creating multiple sections that say the same thing
-- Using asterisks (*) or dashes (-) for bullets anywhere in the response
-- Including document headers like "e& Business Network Operations Guide" in the response
-
-REMEMBER: 
-- Plain text only. No symbols. No markdown. No asterisks. No bold.
-- Each piece of information appears ONCE only.
-- Simple structure: Natural paragraphs and numbered lists for steps.
-- Write clearly and completely, but keep it simple and avoid repetition."""
+Rules:
+- Use only what is written in the documents. Do not add outside knowledge.
+- Keep facts (numbers, names, times, commands) exactly as written.
+- Give a complete answer; include all relevant details from the documents.
+- Do NOT cite or invent source labels like "document 1" or "according to document N" - just state the information.
+- If the answer is not in the documents, reply exactly: "I don't have that information in the available documents." """
+    else:
+        system_prompt = "You are a helpful network assistant for e&'s Business Network Operations (BNO) department. Always provide complete, thorough responses. Never cut off mid-sentence or leave responses incomplete."
         
         # Check if query is too short or non-substantive
         query_lower = prompt.strip().lower()
@@ -327,138 +276,64 @@ REMEMBER:
             # For very short queries with no/insufficient context, give a brief helpful response
             return "I'm here to help you with questions about e& Business Network Operations. Please ask a specific question about the documents you've uploaded, or upload documents first to get started."
         
-        user_prompt = f"""Context from company documents:
+    if context:
+        user_prompt = f"""Documents:
 {context}
 
 Question: {prompt}
 
-Instructions: 
-- Carefully read the context above. If it contains information that answers the question (even if phrased differently), extract and provide that information.
-- Look for related terms, synonyms, or different phrasings of the question in the context.
-- If the answer is in the context above, provide a CONCISE and FOCUSED answer using ONLY information from the context.
-- IMPORTANT: Be concise - if asked for a list of commands, provide ONLY the commands. Do NOT include section headers, appendix names, or metadata.
-- Do NOT include items like "Update documentation", "Network Security", "Access Control" - these are section headers, NOT commands.
-- If asked for "common security commands", provide ONLY security-related commands (Show Access Lists, Show Firewall Rules, etc.) - do NOT mix in general network commands unless specifically asked.
-- Ensure your response is COMPLETE but CONCISE - do not cut off mid-sentence, but also do not add unnecessary information.
-
-CRITICAL: ABSOLUTELY NO REPETITION - BE CONCISE - THIS IS EXTREMELY IMPORTANT
-- Each piece of information appears EXACTLY ONCE in your response
-- BE CONCISE: Keep responses short and focused. Maximum 10-15 items in any list
-- If you list items, list them ONCE only, in the most appropriate place
-- Do NOT create multiple sections covering the same topic
-- Do NOT repeat the same items or information under different headings
-- Do NOT use multiple headings like "The commands are:", "Commands include:", "1. The commands are:", "2. The commands are:" - use ONE heading followed by ONE list
-- If you've already listed items in one format, do NOT list them again in another format
-- Do NOT say "Commands include:" and then later say "The commands are:" with the same content
-- Do NOT repeat the same command/item multiple times with different wording
-- Consolidate similar information into one section instead of creating multiple redundant sections
-- NEVER repeat the same numbered list multiple times with different headings
-- If listing commands, just list the command names - do NOT add redundant descriptions to each item
-
-FORMATTING RULES:
-- Write in natural, flowing paragraphs
-- Use section headings in plain text with colon (e.g., "Troubleshooting Workflow:" or "Connectivity Issues:") - do NOT number headings
-- Use numbered lists (1., 2., 3.) ONLY for sequential steps or items
-- When listing steps, use: "The steps are:" or "Steps include:" followed by numbered list (1., 2., 3.)
-- Keep structure simple: One clear answer, one logical flow, no repetition
-- Format in plain text only: NO asterisks (*), NO dashes (-) for bullets, NO double asterisks (**), NO markdown, NO symbols
-- Do NOT use asterisks (*) or dashes (-) for bullets - use numbered lists (1., 2., 3.) instead
-- Do NOT use double asterisks (**) for bold - just write text normally
-- Do NOT include document headers, titles, or metadata - only provide the actual answer content
-
-EXAMPLE OF GOOD STRUCTURE:
-"The troubleshooting workflow in BNO involves the following steps:
-
-1. Information Gathering: Collect details about the issue including symptoms, affected services, time of occurrence, and any recent changes.
-
-2. Initial Diagnosis: Review network monitoring data, check device status, and analyze recent logs to identify potential causes.
-
-3. Remote Diagnostics: Perform connectivity tests, check routing, and verify service configuration using remote tools.
-
-4. On-Site Visit: If remote resolution is not possible, schedule an on-site visit to investigate further."
-
-WRONG FORMAT (NEVER DO THIS):
-- "1. **Information Gathering**: ..." (no bold, no numbered headings)
-- "* Information Gathering: ..." (no asterisks)
-- "**Information Gathering**" (no markdown)
-- Repeating information in multiple sections
-- Using any markdown symbols whatsoever"
-
-- If the answer is truly NOT in the context above (after checking thoroughly), respond with ONLY: "I don't have that information in the available documents."
-- CRITICAL: If you HAVE provided information from the context (like a list of commands, steps, or details), do NOT add "I don't have that information" at the end - this is contradictory and confusing. Only use that phrase if you found NO relevant information at all.
-- CRITICAL: If you HAVE provided information from the context (like a list of commands, steps, or details), do NOT add "I don't have that information" at the end - this is contradictory and confusing. Only use that phrase if you found NO relevant information at all.
-- For very short or unclear queries, if there's no relevant context, provide a brief, helpful response asking for clarification.
+Answer using only the information from the documents above. Do not refer to the documents by number. If the information is not in the documents, say "I don't have that information in the available documents."
 
 Answer:"""
-        
-        # Use chat API (streaming support)
-        messages = [
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': user_prompt}
-        ]
-        
-        # Check if streaming is requested
-        stream = kwargs.pop('stream', False)
-        
-        # Set temperature to 0 for deterministic responses (enterprise standard)
-        # This ensures consistent answers to the same question
-        # Increase num_predict to allow longer, complete responses
-        kwargs.setdefault('options', {})
-        if isinstance(kwargs['options'], dict):
-            kwargs['options']['temperature'] = 0.0
-            kwargs['options']['seed'] = 42  # Fixed seed for reproducibility
-            kwargs['options']['num_predict'] = 4096  # Allow longer responses (default is often 128 or 512)
-        
-        if stream:
-            # For streaming, we need to collect the response
-            full_response = ""
-            for chunk in _ollama_client.chat(
-                model=config.OLLAMA_CONFIG["language_model"],
-                messages=messages,
-                stream=True,
-                **kwargs
-            ):
-                if 'message' in chunk and 'content' in chunk['message']:
-                    full_response += chunk['message']['content']
-            # Ensure we always return a non-empty string
-            if not full_response or full_response.strip() == '':
-                return "I apologize, but I didn't receive a response. Please try again."
-            # Clean response to remove repetition
-            return _clean_response(full_response)
-        else:
-            response = _ollama_client.chat(
-                model=config.OLLAMA_CONFIG["language_model"],
-                messages=messages,
-                **kwargs
-            )
-            result = response.get('message', {}).get('content', '')
-            # Ensure we always return a non-empty string
-            if not result or result.strip() == '':
-                return "I apologize, but I didn't receive a response. Please try again."
-            # Clean response to remove repetition
-            return _clean_response(result)
     else:
-        # No context - simple chat
-        kwargs.setdefault('options', {})
-        if isinstance(kwargs['options'], dict):
-            kwargs['options']['temperature'] = 0.0
-            kwargs['options']['seed'] = 42
-            kwargs['options']['num_predict'] = 4096  # Allow longer responses
-        messages = [
-            {'role': 'system', 'content': "You are a helpful network assistant for e&'s Business Network Operations (BNO) department. Always provide complete, thorough responses. Never cut off mid-sentence or leave responses incomplete."},
-            {'role': 'user', 'content': prompt}
-        ]
+        user_prompt = prompt
+    
+    messages = [
+        {'role': 'system', 'content': system_prompt},
+        {'role': 'user', 'content': user_prompt}
+    ]
+    
+    stream = kwargs.pop('stream', False)
+    
+    kwargs.setdefault('options', {})
+    if isinstance(kwargs['options'], dict):
+        kwargs['options']['temperature'] = 0.0
+        kwargs['options']['seed'] = 42
+        # Allow longer, complete answers (was 300, which could cut off policy text).
+        kwargs['options']['num_predict'] = 512
+    
+    if stream:
+        full_response = ""
+        for chunk in _ollama_client.chat(
+            model=config.OLLAMA_CONFIG["language_model"],
+            messages=messages,
+            stream=True,
+            **kwargs
+        ):
+            if 'message' in chunk and 'content' in chunk['message']:
+                full_response += chunk['message']['content']
+        if not full_response or full_response.strip() == '':
+            return "I apologize, but I didn't receive a response. Please try again."
+
+        cleaned = _clean_response(full_response)
+        if not cleaned or len(cleaned.strip()) == 0:
+            return "I don't have that information in the available documents."
+        return cleaned
+    else:
         response = _ollama_client.chat(
             model=config.OLLAMA_CONFIG["language_model"],
             messages=messages,
             **kwargs
         )
         result = response.get('message', {}).get('content', '')
-        # Ensure we always return a non-empty string
+        
         if not result or result.strip() == '':
-            return "I'm here to help you with questions about e& Business Network Operations. Please ask a specific question or upload documents to get started."
-        # Clean response to remove repetition
-        return _clean_response(result)
+            return "I apologize, but I didn't receive a response. Please try again."
+
+        cleaned = _clean_response(result)
+        if not cleaned or len(cleaned.strip()) == 0:
+            return "I don't have that information in the available documents."
+        return cleaned
 
 
 # ============================================================================

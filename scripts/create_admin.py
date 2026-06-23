@@ -4,7 +4,8 @@ Can be run even if server is running (will just add user if doesn't exist)
 """
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path (parent of scripts directory)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.shared.database import SessionLocal, User, Base, engine
 from backend.api_server.auth import get_password_hash

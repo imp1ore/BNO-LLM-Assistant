@@ -1,25 +1,26 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-/* e& Branding Colors */
+/* e& Branding Colors - official brand palette (e& Red #E00800) */
 :root {
-    --e-red: #DC143C;          /* Crimson Red - Primary Logo Color */
-    --e-red-dark: #B01030;     /* Darker red for hover */
-    --e-red-light: #E63950;    /* Lighter red */
-    --e-black: #000000;        /* Black */
+    --e-red: #E00800;          /* Official e& Red (Pantone 2347C) */
+    --e-red-dark: #B00600;     /* Darker red for hover/active */
+    --e-red-light: #FF2419;    /* Lighter red accent */
+    --e-black: #1C1C1E;        /* Near-black for dark surfaces */
     --e-white: #FFFFFF;         /* White */
-    --e-gray: #2C2C2C;         /* Dark Gray */
-    --e-gray-light: #6B6B6B;   /* Light Gray */
-    --e-text: #1A1A1A;         /* Text color */
-    --e-text-light: #666666;   /* Light text */
-    --e-bg: #FAFAFA;           /* Light background */
-    --e-border: #E0E0E0;       /* Border color */
-    
+    --e-gray: #2B2B2E;         /* Dark grey surface (e.g. admin bar) */
+    --e-gray-light: #6E6E73;   /* Muted grey text */
+    --e-text: #1A1A1A;         /* Primary text */
+    --e-text-light: #6E6E73;   /* Secondary text */
+    --e-bg: #F6F6F7;           /* App background (calm neutral) */
+    --e-surface: #FFFFFF;      /* Cards / panels */
+    --e-border: #E6E6E9;       /* Hairline borders */
+
     /* Legacy names for compatibility */
     --primary-red: var(--e-red);
     --secondary-black: var(--e-black);
     --background-white: var(--e-white);
-    --light-gray: #F5F5F5;
-    --dark-gray: #333333;
+    --light-gray: #F2F2F4;
+    --dark-gray: #3A3A3C;
     --border-gray: var(--e-border);
 }
 
@@ -42,7 +43,7 @@ body {
     display: inline-block;
     width: 16px;
     height: 16px;
-    border: 2px solid rgba(220, 20, 60, 0.2);
+    border: 2px solid rgba(224, 8, 0, 0.2);
     border-top-color: var(--e-red);
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
@@ -104,7 +105,7 @@ body {
     border-radius: 16px;
     padding: 48px;
     text-align: center;
-    box-shadow: 0 20px 60px rgba(220, 20, 60, 0.3);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.14);
 }
 
 .auth-loading-content .loading {
@@ -124,6 +125,7 @@ body {
     bottom: 0;
     background: url('data:image/svg+xml,<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse"><path d="M 100 0 L 0 0 0 100" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1"/></pattern></defs><rect width="100%" height="100%" fill="url(%23grid)"/></svg>');
     opacity: 0.3;
+    pointer-events: none;
 }
 
 .login-card {
@@ -132,7 +134,7 @@ body {
     padding: 48px;
     width: 100%;
     max-width: 420px;
-    box-shadow: 0 20px 60px rgba(220, 20, 60, 0.3);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.14);
     position: relative;
     z-index: 1;
 }
@@ -153,7 +155,7 @@ body {
     justify-content: center;
     font-size: 24px;
     font-weight: 700;
-    box-shadow: 0 8px 24px rgba(220, 20, 60, 0.4);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
 }
 
 .login-card h1 {
@@ -208,7 +210,7 @@ body {
 .form-group input:focus {
     outline: none;
     border-color: var(--e-red);
-    box-shadow: 0 0 0 3px rgba(220, 20, 60, 0.1);
+    box-shadow: 0 0 0 3px rgba(224, 8, 0, 0.1);
 }
 
 .btn {
@@ -226,13 +228,13 @@ body {
 .btn-primary {
     background: var(--e-red);
     color: #ffffff;
-    box-shadow: 0 4px 12px rgba(220, 20, 60, 0.3);
+    box-shadow: 0 4px 12px rgba(224, 8, 0, 0.3);
 }
 
 .btn-primary:hover {
     background: var(--e-red-dark);
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(220, 20, 60, 0.4);
+    box-shadow: 0 6px 20px rgba(224, 8, 0, 0.26);
 }
 
 .btn-primary:disabled {
@@ -340,7 +342,7 @@ body {
 }
 
 .upload-btn:hover {
-    background-color: #B01030;
+    background-color: #B00600;
 }
 
 .user-menu {
@@ -425,18 +427,18 @@ body {
     font-size: 14px;
     font-weight: 600;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 2px 8px rgba(220, 20, 60, 0.2);
+    box-shadow: 0 2px 8px rgba(224, 8, 0, 0.2);
 }
 
 .btn-new-chat:hover {
     background-color: var(--e-red-dark);
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(220, 20, 60, 0.3);
+    box-shadow: 0 4px 12px rgba(224, 8, 0, 0.3);
 }
 
 .btn-new-chat:active {
     transform: translateY(0);
-    box-shadow: 0 2px 6px rgba(220, 20, 60, 0.2);
+    box-shadow: 0 2px 6px rgba(224, 8, 0, 0.2);
 }
 
 .new-chat-btn {
@@ -451,7 +453,7 @@ body {
 }
 
 .new-chat-btn:hover {
-    background-color: #B01030;
+    background-color: #B00600;
     transform: translateY(-1px);
 }
 
@@ -578,7 +580,7 @@ body {
 }
 
 .chat-delete-btn:hover {
-    background: rgba(220, 20, 60, 0.15);
+    background: rgba(224, 8, 0, 0.15);
     color: var(--e-red);
 }
 
@@ -587,7 +589,7 @@ body {
 }
 
 .chat-item.active .chat-delete-btn:hover {
-    background: rgba(220, 20, 60, 0.2);
+    background: rgba(224, 8, 0, 0.2);
     color: var(--e-red);
 }
 
@@ -748,7 +750,7 @@ body {
 .selection-btn.danger:hover:not(:disabled) {
     background: var(--e-red-dark);
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(220, 20, 60, 0.3);
+    box-shadow: 0 2px 8px rgba(224, 8, 0, 0.3);
 }
 
 .selection-btn:disabled {
@@ -1034,7 +1036,7 @@ body {
 .btn-send:hover:not(:disabled) {
     background-color: var(--e-red-dark);
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(220, 20, 60, 0.3);
+    box-shadow: 0 4px 12px rgba(224, 8, 0, 0.3);
 }
 
 .input-container button:disabled,

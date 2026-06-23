@@ -89,19 +89,25 @@ def init_db():
     try:
         from backend.api_server.auth import get_password_hash
         
-        admin_user = db.query(User).filter(User.username == "admin").first()
+        admin_username = getattr(config, "ADMIN_USERNAME", "admin")
+        admin_password = getattr(config, "ADMIN_PASSWORD", "admin")
+        admin_user = db.query(User).filter(User.username == admin_username).first()
         if not admin_user:
             admin_user = User(
-                username="admin",
+                username=admin_username,
                 email=None,  # No email needed
-                hashed_password=get_password_hash("admin"),
+                hashed_password=get_password_hash(admin_password),
                 is_admin=True,
                 can_upload=True,
                 full_name="Administrator"
             )
             db.add(admin_user)
             db.commit()
-            print("✓ Default admin user created (username: admin, password: admin)")
+            if admin_password == "admin":
+                print(f"✓ Default admin user created (username: {admin_username}, password: admin) "
+                      "- CHANGE THIS via ADMIN_PASSWORD in .env for production")
+            else:
+                print(f"✓ Admin user created (username: {admin_username})")
     except Exception as e:
         print(f"Error creating default admin user: {e}")
         db.rollback()

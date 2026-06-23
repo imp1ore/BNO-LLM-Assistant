@@ -84,6 +84,9 @@ class DocumentUploadResponse(BaseModel):
     
     class Config:
         from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 
 class QueryRequest(BaseModel):
@@ -105,6 +108,17 @@ class AdminUserCreate(BaseModel):
     full_name: Optional[str] = None
     can_upload: bool = False
     is_admin: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    """Self-service password change"""
+    old_password: str
+    new_password: str
+
+
+class ResetPasswordRequest(BaseModel):
+    """Admin password reset for another user"""
+    new_password: str
 
 
 class QueryResponse(BaseModel):

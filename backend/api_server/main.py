@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
-import httpx
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -21,25 +21,46 @@ from backend.shared.database import get_db, init_db, User, Chat, Message, Docume
 from backend.shared.document_processor import extract_text, split_text_into_chunks
 from backend.shared.llm_providers import get_embedding
 from backend.shared.vector_db import add_documents, init_vector_db
-from backend.api_server.auth import verify_password, get_password_hash, create_access_token, decode_access_token
+from backend.api_server.auth import (
+    verify_password, get_password_hash, create_access_token, decode_access_token,
+    validate_password_strength,
+)
 from backend.api_server.models import (
     MessageRequest,
     UserCreate, UserLogin, UserResponse, Token,
     ChatCreate, ChatResponse, MessageCreate, MessageResponse,
-    DocumentUploadResponse, QueryRequest, QueryResponse, AdminUserCreate
+    DocumentUploadResponse, QueryRequest, QueryResponse, AdminUserCreate,
+    ChangePasswordRequest, ResetPasswordRequest,
 )
+from backend.middleware.error_handler import error_handler_middleware
+from backend.middleware.logging_middleware import logging_middleware
+from backend.utils.logging import setup_logging
 import config
 
-# Initialize database
+# Setup logging
+logger = setup_logging()
+
+# Initialize database and RAG (same process = upload and query share ChromaDB, no sync issues)
 init_db()
 init_vector_db()
+from backend.llm_server.rag_engine import RAGEngine
+_rag_engine = RAGEngine()
 
 app = FastAPI(title="BNO LLM Assistant API", version="1.0.0")
 
+# Add middleware (order matters - error handler should be last)
+app.middleware("http")(logging_middleware)
+app.middleware("http")(error_handler_middleware)
+
 # CORS middleware
+# The frontend is served from the same origin as the API, so CORS normally isn't
+# needed. These defaults cover local dev; set CORS_ORIGINS in .env (comma-separated)
+# if you ever serve the UI from a different host than the API.
+_cors_origins = os.getenv("CORS_ORIGINS", "http://127.0.0.1:9000,http://localhost:9000")
+allow_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:9000", "http://localhost:9000"],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,18 +118,35 @@ async def get_current_user(
 # ============================================================================
 @app.post("/api/auth/register", response_model=UserResponse)
 async def register(user_data: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user"""
+    """Register a new user (disabled by default in production).
+
+    Open self-registration is gated behind config.ALLOW_REGISTRATION. In a
+    corporate deployment accounts are created by an admin instead.
+    """
+    if not getattr(config, "ALLOW_REGISTRATION", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Self-registration is disabled. Please contact an administrator for an account.",
+        )
+
+    # Enforce password policy
+    pw_error = validate_password_strength(user_data.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+
     # Check if user exists
     if db.query(User).filter(User.username == user_data.username).first():
         raise HTTPException(status_code=400, detail="Username already registered")
     # Email is optional, no need to check for duplicates
     
-    # Create user
+    # Create user - self-registered users get NO upload/admin privileges by default
     hashed_password = get_password_hash(user_data.password)
     user = User(
         username=user_data.username,
         email=user_data.email if user_data.email else None,  # Optional
-        hashed_password=hashed_password
+        hashed_password=hashed_password,
+        can_upload=False,
+        is_admin=False,
     )
     db.add(user)
     db.commit()
@@ -143,6 +181,28 @@ async def login(credentials: UserLogin, db: Session = Depends(get_db)):
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """Get current user information"""
     return current_user
+
+
+@app.post("/api/auth/change-password")
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Allow the logged-in user to change their own password."""
+    if not verify_password(payload.old_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    pw_error = validate_password_strength(payload.new_password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+
+    if verify_password(payload.new_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="New password must be different from the current password")
+
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
+    return {"message": "Password changed successfully"}
 
 
 # ============================================================================
@@ -326,21 +386,21 @@ async def send_message_v2(request: MessageRequest, current_user: User = Depends(
     user_message = Message(chat_id=chat.id, role="user", content=content)
     db.add(user_message)
     db.commit()
-    
-    # Call LLM server
+
+    # Run RAG in-process so we see the same ChromaDB as uploads (no cross-process sync issues)
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"http://{config.LLM_SERVER_HOST}:{config.LLM_SERVER_PORT}/query",
-                json={"query": content}
-            )
-            response.raise_for_status()
-            result = response.json()
+        result = await asyncio.to_thread(_rag_engine.query, content)
+        llm_response = (result.get("response") or "").strip()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calling LLM server: {str(e)}")
+        import traceback
+        error_detail = f"Error running RAG: {str(e)}"
+        logger.exception(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
+    if not llm_response:
+        llm_response = "I apologize, but I didn't receive a response. Please try again."
     
     # Save assistant message
-    assistant_message = Message(chat_id=chat.id, role="assistant", content=result["response"])
+    assistant_message = Message(chat_id=chat.id, role="assistant", content=llm_response)
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
@@ -351,11 +411,11 @@ async def send_message_v2(request: MessageRequest, current_user: User = Depends(
     
     return {
         "chat_id": chat.id,
-        "response": result["response"],  # Add response field for compatibility
+        "response": llm_response,  # Add response field for compatibility
         "assistant_reply": {
             "id": assistant_message.id,
             "role": "assistant",
-            "content": result["response"],
+            "content": llm_response,
             "created_at": assistant_message.created_at
         }
     }
@@ -394,21 +454,16 @@ async def query(request: QueryRequest, current_user: User = Depends(get_current_
     user_message = Message(chat_id=chat.id, role="user", content=request.query)
     db.add(user_message)
     db.commit()
-    
-    # Call LLM server
+
+    # Run RAG in-process so we see the same ChromaDB as uploads (no cross-process sync issues)
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"http://{config.LLM_SERVER_HOST}:{config.LLM_SERVER_PORT}/query",
-                json={"query": request.query}
-            )
-            response.raise_for_status()
-            result = response.json()
+        result = await asyncio.to_thread(_rag_engine.query, request.query)
+        rag_response = (result.get("response") or "").strip()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calling LLM server: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Error running RAG: {str(e)}")
+
     # Save assistant message
-    assistant_message = Message(chat_id=chat.id, role="assistant", content=result["response"])
+    assistant_message = Message(chat_id=chat.id, role="assistant", content=rag_response)
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
@@ -418,7 +473,7 @@ async def query(request: QueryRequest, current_user: User = Depends(get_current_
     db.commit()
     
     return QueryResponse(
-        response=result["response"],
+        response=rag_response,
         chat_id=chat.id,
         message_id=assistant_message.id
     )
@@ -445,6 +500,30 @@ async def upload_document(
     file_size = len(file_content)
     if file_size > config.MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"File too large. Max size: {config.MAX_FILE_SIZE_MB}MB")
+    
+    # Check for existing documents with the same filename and delete their chunks first
+    # This prevents duplication when re-uploading the same file; also remove old DB rows and files
+    from backend.shared.vector_db import delete_documents
+    existing_docs = db.query(Document).filter(Document.filename == file.filename).all()
+    if existing_docs:
+        print(f"[DEBUG] Found {len(existing_docs)} existing document(s) with filename '{file.filename}', cleaning up old chunks and DB rows...")
+        for existing_doc in existing_docs:
+            try:
+                delete_documents(document_ids=[str(existing_doc.id)])
+                print(f"[DEBUG] Deleted chunks for existing document ID {existing_doc.id}")
+            except Exception as e:
+                print(f"[DEBUG] Error deleting chunks for document {existing_doc.id}: {e}")
+            # Remove old file from disk if it still exists
+            old_path = existing_doc.file_path
+            if old_path and os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                    print(f"[DEBUG] Removed old file: {old_path}")
+                except Exception as e:
+                    print(f"[DEBUG] Error removing old file {old_path}: {e}")
+            # Remove old document row so we don't have duplicate/orphan entries
+            db.delete(existing_doc)
+        db.commit()
     
     # Save file
     file_path = config.DOCUMENTS_DIR / f"{current_user.id}_{datetime.utcnow().timestamp()}_{file.filename}"
@@ -490,10 +569,18 @@ async def upload_document(
                 raise Exception(f"Failed to generate embedding for chunk {i}/{len(chunks)}: {str(e)}")
         
         # Add to vector database
-        metadata = [{"user_id": current_user.id, "document_id": doc.id}] * len(chunks)
-        print(f"[DEBUG] Adding {len(chunks)} chunks to vector database...")
+        metadata = [{"user_id": current_user.id, "document_id": str(doc.id), "filename": file.filename}] * len(chunks)
+        print(f"[DEBUG] Adding {len(chunks)} chunks to vector database for document {doc.id}...")
         add_documents(chunks, embeddings, metadata)
-        print(f"[DEBUG] Added {len(chunks)} chunks to vector database")
+        print(f"[DEBUG] Successfully added {len(chunks)} chunks to vector database")
+        
+        # Verify chunks were added by checking vector DB status
+        from backend.shared.vector_db import get_vector_db_status
+        try:
+            status = get_vector_db_status()
+            print(f"[DEBUG] Vector DB now contains {status.get('total_chunks', 0)} total chunks")
+        except Exception as e:
+            print(f"[DEBUG] Could not verify vector DB status: {e}")
         
         # Update chunk count
         doc.chunk_count = len(chunks)
@@ -502,8 +589,9 @@ async def upload_document(
         doc.processed = True
         db.commit()
         
+        print(f"[DEBUG] Document {doc.id} ({file.filename}) processing complete and ready for queries")
+        
     except Exception as e:
-        # Log full error for debugging
         import traceback
         error_msg = f"Error processing document {file.filename}: {str(e)}"
         print(f"[ERROR] {error_msg}")
@@ -528,17 +616,40 @@ async def get_documents(current_user: User = Depends(get_current_user), db: Sess
         raise HTTPException(status_code=403, detail="Upload access required to view documents")
     
     # Return all documents (global/shared) for users with upload access
-    # CRITICAL: No user_id filter - all documents are shared globally across all users with upload access
+    # No user_id filter - all documents are shared globally
     # This means ALL users with can_upload=True see the SAME documents
     documents = db.query(Document).order_by(Document.uploaded_at.desc()).all()
     
-    # Explicit debug logging to verify behavior
-    print(f"[DOCUMENTS API] User '{current_user.username}' (id: {current_user.id}, can_upload: {current_user.can_upload}, is_admin: {current_user.is_admin})")
-    print(f"[DOCUMENTS API] Query executed: db.query(Document).order_by(Document.uploaded_at.desc()).all()")
-    print(f"[DOCUMENTS API] Total documents in database: {db.query(Document).count()}")
-    print(f"[DOCUMENTS API] Returning {len(documents)} documents (GLOBAL/SHARED - no user_id filter)")
-    for i, doc in enumerate(documents, 1):
-        print(f"[DOCUMENTS API]   Document {i}: {doc.filename} (id: {doc.id}, user_id: {doc.user_id})")
+    # Verify documents actually exist in vector DB and sync status
+    from backend.shared.vector_db import get_vector_db_status
+    
+    try:
+        vector_db_status = get_vector_db_status()
+        actual_chunks_in_vector_db = vector_db_status.get("total_chunks", 0)
+        
+        # Calculate expected chunks from SQL database
+        expected_chunks = sum(doc.chunk_count or 0 for doc in documents if doc.processed)
+        
+        # If there's a mismatch, update document status
+        if actual_chunks_in_vector_db != expected_chunks:
+            logger.warning(f"Vector DB mismatch: SQL shows {expected_chunks} chunks, but vector DB has {actual_chunks_in_vector_db} chunks")
+            
+            # If vector DB is empty but documents show as processed, mark them as unprocessed
+            if actual_chunks_in_vector_db == 0 and expected_chunks > 0:
+                logger.warning("Vector DB is empty but documents show as processed. Updating status...")
+                for doc in documents:
+                    if doc.processed:
+                        doc.processed = False
+                        doc.chunk_count = 0
+                db.commit()
+                logger.info("Updated document status: marked all as unprocessed")
+    
+    except Exception as e:
+        logger.error(f"Error verifying vector DB status: {e}")
+        # Continue anyway - don't fail the request
+    
+    # Re-query documents after potential update (to get fresh data)
+    documents = db.query(Document).order_by(Document.uploaded_at.desc()).all()
     
     return documents
 
@@ -553,15 +664,26 @@ async def get_document_stats(current_user: User = Depends(get_current_user), db:
     # Get all documents (global/shared)
     documents = db.query(Document).all()
     
-    # Calculate statistics
+    # Calculate statistics from SQL database
     total_documents = len(documents)
-    total_chunks = sum(doc.chunk_count or 0 for doc in documents)
+    total_chunks_sql = sum(doc.chunk_count or 0 for doc in documents)
     total_size = sum(doc.file_size or 0 for doc in documents)
+    
+    # Also get actual chunk count from vector DB
+    actual_chunks_in_vector_db = None
+    try:
+        from backend.shared.vector_db import get_vector_db_status
+        vector_db_status = get_vector_db_status()
+        actual_chunks_in_vector_db = vector_db_status.get("total_chunks", 0)
+    except Exception as e:
+        logger.error(f"Error getting vector DB chunk count: {e}")
     
     return {
         "total_documents": total_documents,
-        "total_chunks": total_chunks,
-        "total_size": total_size
+        "total_chunks": total_chunks_sql,
+        "total_chunks_in_vector_db": actual_chunks_in_vector_db,  # Actual count from vector DB
+        "total_size": total_size,
+        "vector_db_synced": actual_chunks_in_vector_db == total_chunks_sql if actual_chunks_in_vector_db is not None else None
     }
 
 
@@ -579,31 +701,42 @@ async def delete_document(document_id: int, current_user: User = Depends(get_cur
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # 1. Delete all chunks from vector database (synchronized deletion)
+    # Store document ID and file path before deletion
+    doc_id = doc.id
+    file_path = doc.file_path
+    chunk_count = doc.chunk_count or 0
+    
+    # Delete all chunks from vector database first
     try:
-        delete_documents(document_ids=[str(doc.id)], user_id=current_user.id)
-        print(f"[DELETE] Removed {doc.chunk_count} chunks from vector database for document {doc.id}")
+        from backend.shared.vector_db import delete_documents
+        delete_documents(document_ids=[str(doc_id)])
+        print(f"[DELETE] Removed chunks from vector database for document {doc_id}")
     except Exception as e:
-        print(f"[WARNING] Error deleting chunks from vector DB: {e}")
-        # Continue with deletion even if vector DB deletion fails
+        import traceback
+        print(f"[ERROR] Failed to delete chunks from vector DB: {e}")
+        traceback.print_exc()
+        # Don't continue if vector DB deletion fails
+        raise HTTPException(status_code=500, detail=f"Failed to delete document chunks from vector database: {str(e)}")
     
     # 2. Delete physical file
-    if os.path.exists(doc.file_path):
+    if file_path and os.path.exists(file_path):
         try:
-            os.remove(doc.file_path)
-            print(f"[DELETE] Removed file: {doc.file_path}")
+            os.remove(file_path)
+            print(f"[DELETE] ✓ Removed file: {file_path}")
         except Exception as e:
-            print(f"[WARNING] Error deleting file: {e}")
+            print(f"[WARNING] Error deleting file {file_path}: {e}")
+            # Continue even if file deletion fails (file might already be deleted)
     
     # 3. Delete from database (cascade will handle any related data)
     db.delete(doc)
     db.commit()
     
-    # 4. Verify deletion
-    verify_doc = db.query(Document).filter(Document.id == document_id).first()
+    # 4. Verify database deletion
+    verify_doc = db.query(Document).filter(Document.id == doc_id).first()
     if verify_doc:
         raise HTTPException(status_code=500, detail="Document deletion failed - still exists in database")
     
+    print(f"[DELETE] ✓ Document {doc_id} completely removed from database, vector DB, and filesystem")
     return {"message": "Document and all associated data deleted successfully"}
 
 
@@ -634,9 +767,10 @@ async def create_user(user_data: AdminUserCreate, current_user: User = Depends(g
         if existing:
             raise HTTPException(status_code=400, detail="Username already exists")
         
-        # Validate password length
-        if len(user_data.password) < 3:
-            raise HTTPException(status_code=400, detail="Password must be at least 3 characters")
+        # Validate password against policy
+        pw_error = validate_password_strength(user_data.password)
+        if pw_error:
+            raise HTTPException(status_code=400, detail=pw_error)
         
         # Create user
         try:
@@ -688,6 +822,60 @@ async def update_user(user_id: int, user_data: dict, current_user: User = Depend
     db.refresh(user)
     
     return {"message": "User updated successfully"}
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+async def admin_reset_password(
+    user_id: int,
+    payload: ResetPasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Reset another user's password (admin only)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    pw_error = validate_password_strength(payload.new_password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
+    return {"message": f"Password reset for user '{user.username}'"}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a user (admin only) with safety guards."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Guard: don't let an admin delete their own account
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    # Guard: never delete the last remaining admin
+    if user.is_admin:
+        admin_count = db.query(User).filter(User.is_admin == True).count()  # noqa: E712
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the last remaining admin account")
+
+    username = user.username
+    db.delete(user)
+    db.commit()
+    return {"message": f"User '{username}' deleted successfully"}
 
 
 # ============================================================================

@@ -1,0 +1,42 @@
+# systemd unit for the BNO LLM Assistant API server.
+#
+# Install on the server (run as root / with sudo):
+#   1. Edit the paths/user below to match your server.
+#   2. sudo cp deploy/bnollm.service /etc/systemd/system/bnollm.service
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now bnollm
+#   5. Check status / logs:
+#        sudo systemctl status bnollm
+#        sudo journalctl -u bnollm -f
+#
+# This runs the single app process (port 9000). The RAG engine runs inside it.
+# A single process is intentional: SQLite + ChromaDB are not safe to share across
+# multiple workers, so do NOT add Gunicorn/Uvicorn workers.
+
+[Unit]
+Description=BNO LLM Assistant (API + RAG)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# --- EDIT THESE to match your server ---------------------------------------
+# The Linux user that owns the app files (not root if you can avoid it).
+User=bnollm
+# Absolute path to the project directory (where config.py lives).
+WorkingDirectory=/opt/bnollm/BNOLLM
+# Path to the venv's python inside the project.
+ExecStart=/opt/bnollm/BNOLLM/venv/bin/python -m backend.api_server.main
+# ---------------------------------------------------------------------------
+
+EnvironmentFile=/opt/bnollm/BNOLLM/.env
+Restart=on-failure
+RestartSec=5
+
+# Basic hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
