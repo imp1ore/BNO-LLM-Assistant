@@ -134,6 +134,11 @@ MIN_PASSWORD_LENGTH = int(os.getenv("MIN_PASSWORD_LENGTH", "8"))
 JWT_EXPIRATION_HOURS = 8  # Token expires after 8 hours (enterprise standard)
 SESSION_TIMEOUT_MINUTES = 30  # Auto-logout after 30 minutes of inactivity
 
+# Login brute-force protection: max failed attempts per client IP within the
+# window before the endpoint returns HTTP 429. Successful logins reset the count.
+LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "10"))
+LOGIN_WINDOW_MINUTES = int(os.getenv("LOGIN_WINDOW_MINUTES", "5"))
+
 # RAG Configuration
 # Optimized for llama3.2:3b model (smaller context window)
 CHUNK_SIZE = 600  # Characters per chunk (optimized for 3B model - prevents overload)
@@ -142,8 +147,15 @@ TOP_K_RETRIEVAL = 5  # Number of chunks to retrieve (reduced from 10 to prevent 
 SIMILARITY_THRESHOLD = 0.3  # Minimum similarity score to include a chunk (0.0-1.0, higher = more strict)
 
 # File Upload
-MAX_FILE_SIZE_MB = 50
+# Files are processed in the background (extract -> chunk -> embed -> index), so a
+# large file no longer blocks the request or times out. The practical ceiling is
+# processing time + disk/RAM, not this number. 100MB is a safe default.
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
+
+# How many chunks to embed per Ollama call during indexing. Batching is much
+# faster than one request per chunk. Lower it if you hit memory limits.
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
 
 # e& Branding Colors (official brand palette)
 BRAND_COLORS = {

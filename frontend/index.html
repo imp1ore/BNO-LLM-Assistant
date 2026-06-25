@@ -449,6 +449,46 @@
             color: #e65100;
         }
 
+        .document-status.failed {
+            background: #fdecea;
+            color: #c62828;
+        }
+
+        .document-error {
+            font-size: 12px;
+            color: #c62828;
+            margin-top: 6px;
+            max-width: 420px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .retry-doc-btn {
+            padding: 8px 12px;
+            background: transparent;
+            border: 1px solid var(--e-red, #E00800);
+            color: var(--e-red, #E00800);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .retry-doc-btn:hover {
+            background: var(--e-red, #E00800);
+            color: #fff;
+        }
+
         .document-meta {
             font-size: 12px;
             color: #666;
@@ -887,7 +927,7 @@
                 </div>
                 <div class="upload-area" id="uploadArea" onclick="if(userCanUpload) document.getElementById('fileInput').click()" style="border: 2px dashed var(--e-red); background: #ffffff; cursor: pointer;">
                     <p style="font-size: 16px; font-weight: 600; color: var(--e-text); margin-bottom: 8px;">Click to upload or drag and drop</p>
-                    <p style="font-size: 13px; color: var(--e-text-light);">PDF, DOCX, PPTX, TXT • Max file size: 50MB • Multiple files supported</p>
+                    <p style="font-size: 13px; color: var(--e-text-light);">PDF, DOCX, PPTX, TXT • Max file size: <span id="maxFileSizeHint">100MB</span> • Multiple files supported</p>
                     <input type="file" id="fileInput" style="display: none" multiple accept=".pdf,.docx,.pptx,.txt">
                 </div>
                 

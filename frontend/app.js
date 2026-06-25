@@ -13,6 +13,39 @@ let lastActivityTime = Date.now();
 let sessionTimeoutId = null;
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes in milliseconds
 
+// Upload limit (kept in sync with the server via /api/config; fallback below)
+let maxUploadMb = 100;
+let docPollTimer = null;
+
+async function loadClientConfig() {
+    try {
+        const resp = await fetch(`${API_BASE_URL}/config`);
+        if (resp.ok) {
+            const cfg = await resp.json();
+            if (cfg && cfg.max_file_size_mb) {
+                maxUploadMb = cfg.max_file_size_mb;
+                const hint = document.getElementById('maxFileSizeHint');
+                if (hint) hint.textContent = `${maxUploadMb}MB`;
+            }
+        }
+    } catch (e) {
+        console.warn('Could not load client config; using default limit', e);
+    }
+}
+
+// Refresh the documents list a few times while any document is still processing,
+// so background-indexed uploads flip from "Processing" to "Indexed" automatically.
+function pollDocumentsWhileProcessing(attempts = 40) {
+    if (docPollTimer) clearTimeout(docPollTimer);
+    const tick = async (left) => {
+        const docsScreen = document.getElementById('documentsScreen');
+        if (!docsScreen || docsScreen.style.display === 'none' || left <= 0) return;
+        await loadDocuments();
+        docPollTimer = setTimeout(() => tick(left - 1), 3000);
+    };
+    tick(attempts);
+}
+
 // ============================================================================
 // Global Functions (accessible from HTML onclick)
 // ============================================================================
@@ -205,7 +238,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const loginScreen = document.getElementById('loginScreen');
     const authLoading = document.getElementById('authLoading');
     const chatScreen = document.getElementById('chatScreen');
-    
+
+    // Load public client config (upload limit, allowed types)
+    loadClientConfig();
+
     // Enterprise standard: Always validate token on page load
     if (authToken) {
         // Hide login screen immediately, show loading
@@ -1217,14 +1253,27 @@ function renderDocuments(documents) {
         
         // Show title if available, otherwise filename
         const displayName = doc.title || doc.filename;
-        const statusIcon = doc.processed ? '✓' : '⏳';
-        const statusText = doc.processed ? 'Indexed' : 'Processing';
-        
+        // Derive a 3-state status: indexed / failed / processing
+        const status = doc.status || (doc.processed ? 'indexed' : 'processing');
+        let statusIcon = '⏳', statusText = 'Processing', statusClass = 'processing';
+        if (status === 'indexed' || doc.processed) {
+            statusIcon = '✓'; statusText = 'Indexed'; statusClass = 'processed';
+        } else if (status === 'failed') {
+            statusIcon = '✕'; statusText = 'Failed'; statusClass = 'failed';
+        }
+
+        const errorLine = (status === 'failed' && doc.error_message)
+            ? `<div class="document-error" title="${escapeHtml(doc.error_message)}">${escapeHtml(doc.error_message)}</div>`
+            : '';
+        const retryBtn = (status === 'failed')
+            ? `<button class="retry-doc-btn" onclick="reindexDocument(${doc.id})" title="Retry indexing">↻ Retry</button>`
+            : '';
+
         docItem.innerHTML = `
             <div class="document-info">
                 <div class="document-header">
                     <span class="document-name">${escapeHtml(displayName)}</span>
-                    <span class="document-status ${doc.processed ? 'processed' : 'processing'}">
+                    <span class="document-status ${statusClass}">
                         ${statusIcon} ${statusText}
                     </span>
                 </div>
@@ -1233,13 +1282,43 @@ function renderDocuments(documents) {
                     <span class="meta-separator">•</span>
                     <span class="meta-item">${doc.chunk_count || 0} chunks</span>
                 </div>
+                ${errorLine}
             </div>
-            <button class="delete-doc-btn" onclick="deleteDocument(${doc.id})" title="Delete document">
-                🗑️
-            </button>
+            <div class="document-actions">
+                ${retryBtn}
+                <button class="delete-doc-btn" onclick="deleteDocument(${doc.id})" title="Delete document">
+                    🗑️
+                </button>
+            </div>
         `;
         docsList.appendChild(docItem);
     });
+
+    // Stop polling once nothing is processing anymore
+    const anyProcessing = sortedDocs.some(d => (d.status || (d.processed ? 'indexed' : 'processing')) === 'processing');
+    if (!anyProcessing && docPollTimer) {
+        clearTimeout(docPollTimer);
+        docPollTimer = null;
+    }
+}
+
+async function reindexDocument(docId) {
+    try {
+        const response = await secureFetch(`${API_BASE_URL}/documents/${docId}/reindex`, {
+            method: 'POST'
+        });
+        if (response.ok) {
+            showNotification('Re-indexing started...', 'success');
+            loadDocuments();
+            pollDocumentsWhileProcessing();
+        } else {
+            const err = await response.json().catch(() => ({ detail: 'Retry failed' }));
+            showNotification(err.detail || 'Retry failed', 'error');
+        }
+    } catch (e) {
+        console.error('Error re-indexing document:', e);
+        showNotification('Error starting re-index', 'error');
+    }
 }
 
 function formatFileSize(bytes) {
@@ -1331,9 +1410,9 @@ async function processFiles(files) {
             continue;
         }
         
-        // Check file size (50MB max)
-        if (file.size > 50 * 1024 * 1024) {
-            showNotification(`File too large: ${file.name}. Maximum size is 50MB.`, 'error');
+        // Check file size (limit comes from server config)
+        if (file.size > maxUploadMb * 1024 * 1024) {
+            showNotification(`File too large: ${file.name}. Maximum size is ${maxUploadMb}MB.`, 'error');
             continue;
         }
         
@@ -1395,31 +1474,25 @@ async function processFiles(files) {
                 const data = await response.json();
                 const statusEl = document.getElementById(`uploadStatus_${fileId}`);
                 if (statusEl) {
-                    statusEl.textContent = `Processing document... Extracting text and creating ${data.chunk_count || 0} chunks...`;
+                    statusEl.textContent = 'Uploaded. Indexing in the background — it will show as "Indexed" when ready.';
+                    statusEl.style.color = 'var(--e-red)';
+                    statusEl.style.fontWeight = '600';
                 }
-                
-                // Simulate processing progress
+
+                // Hide progress after a few seconds
                 setTimeout(() => {
-                    if (statusEl) {
-                        statusEl.textContent = `Complete! Document indexed with ${data.chunk_count || 0} chunks.`;
-                        statusEl.style.color = 'var(--e-red)';
-                        statusEl.style.fontWeight = '600';
+                    if (progressContainer) {
+                        progressContainer.style.display = 'none';
                     }
-                    
-                    // Hide progress after 3 seconds
-                    setTimeout(() => {
-                        if (progressContainer) {
-                            progressContainer.style.display = 'none';
-                        }
-                    }, 3000);
-                }, 1000);
-                
-                showNotification(`Document "${file.name}" uploaded and processed successfully!`, 'success');
-                
-                // Reload documents if on documents screen
+                }, 4000);
+
+                showNotification(`"${file.name}" uploaded. Indexing in the background...`, 'success');
+
+                // Reload + poll so it flips from Processing to Indexed automatically
                 const documentsScreen = document.getElementById('documentsScreen');
                 if (documentsScreen && documentsScreen.style.display !== 'none') {
                     loadDocuments();
+                    pollDocumentsWhileProcessing();
                 }
             } else {
                 const errorData = await response.json().catch(() => ({ detail: 'Upload failed' }));

@@ -79,6 +79,8 @@ class DocumentUploadResponse(BaseModel):
     file_size: int
     uploaded_at: datetime
     processed: bool
+    status: Optional[str] = "processing"
+    error_message: Optional[str] = None
     chunk_count: Optional[int] = 0
     title: Optional[str] = None
     

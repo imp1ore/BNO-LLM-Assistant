@@ -39,7 +39,21 @@ Browser ──HTTP──▶ FastAPI app (port 9000) ──▶ ChromaDB (vector s
 - [Ollama](https://ollama.com) installed and running
 - The two models the app uses (pulled below)
 
-### Steps
+### Steps (easiest)
+
+```bash
+# One command: creates the venv, installs deps, makes .env (with a secure key),
+# and downloads the AI models. Asks you to pick an admin password.
+./scripts/setup.sh
+
+# Start it
+./scripts/start_prod.sh
+```
+
+Then open <http://127.0.0.1:9000> and log in with the admin account.
+
+<details>
+<summary>Or do it manually</summary>
 
 ```bash
 # 1. Pull the models
@@ -57,11 +71,13 @@ cp .env.example .env        # then edit SECRET_KEY / ADMIN_PASSWORD
 scripts\start.bat           # Windows
 ```
 
-Then open <http://127.0.0.1:9000> and log in with the admin account
-(default `admin` / `admin` unless you set `ADMIN_PASSWORD` in `.env`).
+</details>
 
-> **Deploying to the BNO server?** Follow [`DEPLOYMENT.md`](DEPLOYMENT.md) — it has
-> the full RHEL + systemd setup, firewall/port notes, and a security checklist.
+The default admin is `admin` / `admin` unless you set `ADMIN_PASSWORD` in `.env`
+(setup.sh prompts you for it).
+
+> **Deploying to the BNO server?** Follow [`DEPLOYMENT.md`](DEPLOYMENT.md) — it
+> starts with a 3-command quick path, then full RHEL + systemd reference.
 
 ---
 

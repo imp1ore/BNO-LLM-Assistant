@@ -2,7 +2,7 @@
 API Server - Main FastAPI application on port 9000
 Handles authentication, documents, and chat
 """
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Header
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Header, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -17,9 +17,9 @@ from datetime import datetime
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from backend.shared.database import get_db, init_db, User, Chat, Message, Document
+from backend.shared.database import get_db, init_db, User, Chat, Message, Document, SessionLocal
 from backend.shared.document_processor import extract_text, split_text_into_chunks
-from backend.shared.llm_providers import get_embedding
+from backend.shared.llm_providers import get_embedding, get_embeddings_batch
 from backend.shared.vector_db import add_documents, init_vector_db
 from backend.api_server.auth import (
     verify_password, get_password_hash, create_access_token, decode_access_token,
@@ -155,13 +155,49 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     return user
 
 
+# Simple in-memory login throttle (single-process app). Maps client IP -> list of
+# recent failed-attempt timestamps. Good enough for brute-force slowdown; for a
+# multi-instance deployment, move this to a shared store (e.g. Redis).
+import time as _time
+_login_attempts = {}
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP, honoring X-Forwarded-For when behind a reverse proxy."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_login_rate_limit(ip: str):
+    window = config.LOGIN_WINDOW_MINUTES * 60
+    now = _time.time()
+    attempts = [t for t in _login_attempts.get(ip, []) if now - t < window]
+    _login_attempts[ip] = attempts
+    if len(attempts) >= config.LOGIN_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Try again in {config.LOGIN_WINDOW_MINUTES} minutes.",
+        )
+
+
+def _record_login_failure(ip: str):
+    _login_attempts.setdefault(ip, []).append(_time.time())
+
+
 @app.post("/api/auth/login")
-async def login(credentials: UserLogin, db: Session = Depends(get_db)):
+async def login(credentials: UserLogin, request: Request, db: Session = Depends(get_db)):
     """Login and get access token"""
+    ip = _client_ip(request)
+    _check_login_rate_limit(ip)
     user = db.query(User).filter(User.username == credentials.username).first()
     if not user or not verify_password(credentials.password, user.hashed_password):
+        _record_login_failure(ip)
         raise HTTPException(status_code=401, detail="Incorrect username or password")
-    
+
+    # Successful login clears the failure counter for this IP
+    _login_attempts.pop(ip, None)
     access_token = create_access_token(data={"sub": user.username})
     return {
         "access_token": access_token,
@@ -482,25 +518,122 @@ async def query(request: QueryRequest, current_user: User = Depends(get_current_
 # ============================================================================
 # Document Routes
 # ============================================================================
+def process_document_job(doc_id: int):
+    """Index an uploaded document: extract -> chunk -> embed (batched) -> store.
+
+    Runs in a background thread with its own DB session so the upload request can
+    return immediately. Marks the document processed=True on success, or leaves it
+    processed=False (chunk_count=0) on failure so the UI shows it didn't index.
+    """
+    db = SessionLocal()
+    try:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            print(f"[INDEX] Document {doc_id} not found; skipping")
+            return
+
+        text = extract_text(doc.file_path, f".{doc.file_type}")
+        if len(text) < 50:
+            raise ValueError(
+                f"Extracted very little text ({len(text)} chars). "
+                "The document may be empty, corrupted, or image-based (needs OCR)."
+            )
+
+        chunks = split_text_into_chunks(text)
+        if not chunks:
+            raise ValueError("No chunks created from document text.")
+
+        # Embed in batches (far faster than one request per chunk)
+        batch_size = getattr(config, "EMBED_BATCH_SIZE", 32)
+        embeddings = []
+        total = len(chunks)
+        for start in range(0, total, batch_size):
+            batch = chunks[start:start + batch_size]
+            embeddings.extend(get_embeddings_batch(batch))
+            print(f"[INDEX] doc {doc_id}: embedded {min(start + batch_size, total)}/{total} chunks")
+
+        metadata = [
+            {"user_id": doc.user_id, "document_id": str(doc.id), "filename": doc.filename}
+        ] * len(chunks)
+        add_documents(chunks, embeddings, metadata)
+
+        doc.chunk_count = len(chunks)
+        doc.processed = True
+        doc.status = "indexed"
+        doc.error_message = None
+        db.commit()
+        print(f"[INDEX] Document {doc_id} ({doc.filename}) indexed: {len(chunks)} chunks")
+    except Exception as e:
+        import traceback
+        print(f"[INDEX][ERROR] Document {doc_id} failed: {e}")
+        traceback.print_exc()
+        try:
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if doc:
+                doc.processed = False
+                doc.chunk_count = 0
+                doc.status = "failed"
+                doc.error_message = str(e)[:500]
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
 @app.post("/api/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Upload and process a document"""
+    # Permission: only users who can upload (or admins) may add documents
+    if not current_user.can_upload and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="You do not have permission to upload documents")
+
     # Check file type
     file_ext = Path(file.filename).suffix.lower()
     if file_ext not in config.ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"File type {file_ext} not allowed")
-    
-    # Check file size
-    file_content = await file.read()
-    file_size = len(file_content)
-    if file_size > config.MAX_FILE_SIZE_MB * 1024 * 1024:
-        raise HTTPException(status_code=400, detail=f"File too large. Max size: {config.MAX_FILE_SIZE_MB}MB")
-    
+
+    # Stream the upload straight to disk in 1MB chunks, enforcing the size limit
+    # as we go. This keeps memory flat (~1MB) even for a 100MB upload instead of
+    # loading the whole file into RAM.
+    max_bytes = config.MAX_FILE_SIZE_MB * 1024 * 1024
+    file_path = config.DOCUMENTS_DIR / f"{current_user.id}_{datetime.utcnow().timestamp()}_{file.filename}"
+    file_size = 0
+    CHUNK_BYTES = 1024 * 1024
+    try:
+        with open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(CHUNK_BYTES)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > max_bytes:
+                    f.close()
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Max size: {config.MAX_FILE_SIZE_MB}MB",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
+
+    if file_size == 0:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
     # Check for existing documents with the same filename and delete their chunks first
     # This prevents duplication when re-uploading the same file; also remove old DB rows and files
     from backend.shared.vector_db import delete_documents
@@ -524,13 +657,8 @@ async def upload_document(
             # Remove old document row so we don't have duplicate/orphan entries
             db.delete(existing_doc)
         db.commit()
-    
-    # Save file
-    file_path = config.DOCUMENTS_DIR / f"{current_user.id}_{datetime.utcnow().timestamp()}_{file.filename}"
-    with open(file_path, "wb") as f:
-        f.write(file_content)
-    
-    # Create database record
+
+    # Create database record (status starts as 'processing' until the bg job finishes)
     doc = Document(
         user_id=current_user.id,
         filename=file.filename,
@@ -538,73 +666,19 @@ async def upload_document(
         file_type=file_ext.lstrip('.'),
         file_size=file_size,
         processed=False,
+        status="processing",
         title=title or file.filename
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
-    
-    # Process document in background (for now, synchronous)
-    try:
-        # Extract text
-        text = extract_text(str(file_path), file_ext)
-        
-        if len(text) < 50:
-            raise ValueError(f"Extracted very little text ({len(text)} characters). The document may be corrupted or image-based.")
-        
-        # Split into chunks
-        chunks = split_text_into_chunks(text)
-        
-        if len(chunks) == 0:
-            raise ValueError("No chunks created from document text.")
-        
-        # Generate embeddings
-        print(f"[DEBUG] Generating {len(chunks)} embeddings for {file.filename}...")
-        embeddings = []
-        for i, chunk in enumerate(chunks, 1):
-            try:
-                embedding = get_embedding(chunk)
-                embeddings.append(embedding)
-            except Exception as e:
-                raise Exception(f"Failed to generate embedding for chunk {i}/{len(chunks)}: {str(e)}")
-        
-        # Add to vector database
-        metadata = [{"user_id": current_user.id, "document_id": str(doc.id), "filename": file.filename}] * len(chunks)
-        print(f"[DEBUG] Adding {len(chunks)} chunks to vector database for document {doc.id}...")
-        add_documents(chunks, embeddings, metadata)
-        print(f"[DEBUG] Successfully added {len(chunks)} chunks to vector database")
-        
-        # Verify chunks were added by checking vector DB status
-        from backend.shared.vector_db import get_vector_db_status
-        try:
-            status = get_vector_db_status()
-            print(f"[DEBUG] Vector DB now contains {status.get('total_chunks', 0)} total chunks")
-        except Exception as e:
-            print(f"[DEBUG] Could not verify vector DB status: {e}")
-        
-        # Update chunk count
-        doc.chunk_count = len(chunks)
-        
-        # Mark as processed
-        doc.processed = True
-        db.commit()
-        
-        print(f"[DEBUG] Document {doc.id} ({file.filename}) processing complete and ready for queries")
-        
-    except Exception as e:
-        import traceback
-        error_msg = f"Error processing document {file.filename}: {str(e)}"
-        print(f"[ERROR] {error_msg}")
-        traceback.print_exc()
-        
-        # Update document to show it failed
-        doc.processed = False
-        doc.chunk_count = 0
-        db.commit()
-        
-        # Return document but with error info - frontend can check processed status
-        # Don't raise exception so upload appears successful, but document shows as unprocessed
-    
+
+    # Index the document in the BACKGROUND so the request returns immediately.
+    # This avoids client/proxy timeouts and keeps the server responsive even for
+    # large files. The document shows as "Processing" until indexing finishes.
+    background_tasks.add_task(process_document_job, doc.id)
+    print(f"[DEBUG] Document {doc.id} ({file.filename}) queued for background indexing")
+
     return doc
 
 
@@ -641,6 +715,8 @@ async def get_documents(current_user: User = Depends(get_current_user), db: Sess
                     if doc.processed:
                         doc.processed = False
                         doc.chunk_count = 0
+                        doc.status = "failed"
+                        doc.error_message = "Vector store is empty; document needs re-indexing."
                 db.commit()
                 logger.info("Updated document status: marked all as unprocessed")
     
@@ -685,6 +761,43 @@ async def get_document_stats(current_user: User = Depends(get_current_user), db:
         "total_size": total_size,
         "vector_db_synced": actual_chunks_in_vector_db == total_chunks_sql if actual_chunks_in_vector_db is not None else None
     }
+
+
+@app.post("/api/documents/{document_id}/reindex", response_model=DocumentUploadResponse)
+async def reindex_document(
+    document_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Re-run indexing for a document (e.g. after a failure). The source file must
+    still exist on disk. Clears any stale chunks first, then re-indexes in the background."""
+    if not current_user.can_upload and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Upload access required to re-index documents")
+
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not doc.file_path or not os.path.exists(doc.file_path):
+        raise HTTPException(status_code=400, detail="Original file is no longer on disk; please re-upload it")
+
+    # Clear any existing chunks so a retry doesn't duplicate them
+    try:
+        from backend.shared.vector_db import delete_documents
+        delete_documents(document_ids=[str(doc.id)])
+    except Exception as e:
+        print(f"[REINDEX] Could not clear old chunks for {doc.id}: {e}")
+
+    doc.processed = False
+    doc.chunk_count = 0
+    doc.status = "processing"
+    doc.error_message = None
+    db.commit()
+    db.refresh(doc)
+
+    background_tasks.add_task(process_document_job, doc.id)
+    print(f"[REINDEX] Document {doc.id} ({doc.filename}) queued for re-indexing")
+    return doc
 
 
 @app.delete("/api/documents/{document_id}")
@@ -894,6 +1007,15 @@ async def root():
 async def health():
     """Health check"""
     return {"status": "healthy", "service": "API Server"}
+
+
+@app.get("/api/config")
+async def public_config():
+    """Public client config (upload limits / allowed types) so the UI stays in sync."""
+    return {
+        "max_file_size_mb": config.MAX_FILE_SIZE_MB,
+        "allowed_extensions": sorted(config.ALLOWED_EXTENSIONS),
+    }
 
 
 if __name__ == "__main__":

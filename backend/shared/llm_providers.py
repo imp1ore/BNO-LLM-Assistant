@@ -23,6 +23,24 @@ def get_embedding(text: str) -> List[float]:
         raise ValueError(f"Embedding not supported for provider: {config.LLM_PROVIDER}")
 
 
+def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
+    """Get embeddings for a list of texts in one call when the provider supports it.
+
+    Falls back to per-text embedding if batch embedding is unavailable or fails,
+    so indexing is always robust even on older Ollama versions.
+    """
+    if not texts:
+        return []
+    if config.LLM_PROVIDER == "ollama":
+        try:
+            return _get_ollama_embeddings_batch(texts)
+        except Exception:
+            # Fallback: embed one at a time (slower but reliable)
+            return [_get_ollama_embedding(t) for t in texts]
+    # Other providers: no batch path implemented, embed individually
+    return [get_embedding(t) for t in texts]
+
+
 def generate_response(prompt: str, context: str = None, **kwargs) -> str:
     """Generate response using configured LLM provider"""
     if config.LLM_PROVIDER == "ollama":
@@ -54,6 +72,25 @@ def _get_ollama_embedding(text: str) -> List[float]:
     )
     # embeddings() returns a dict with 'embedding' key containing the list
     return response['embedding']
+
+
+def _get_ollama_embeddings_batch(texts: List[str]) -> List[List[float]]:
+    """Embed multiple texts in a single Ollama call via the newer embed() API."""
+    global _ollama_client
+    if _ollama_client is None:
+        import ollama
+        base_url = config.OLLAMA_CONFIG.get("base_url", "http://localhost:11434")
+        _ollama_client = ollama.Client(host=base_url)
+
+    response = _ollama_client.embed(
+        model=config.OLLAMA_CONFIG["embedding_model"],
+        input=texts,
+    )
+    # embed() returns an object/dict with 'embeddings' (list of vectors)
+    embeddings = response["embeddings"] if isinstance(response, dict) else response.embeddings
+    if len(embeddings) != len(texts):
+        raise ValueError("Batch embedding count mismatch")
+    return [list(e) for e in embeddings]
 
 
 def _clean_response(response: str) -> str:
