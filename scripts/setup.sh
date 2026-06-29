@@ -25,17 +25,30 @@ cd "$PROJECT_DIR"
 
 echo -e "${GREEN}=== BNO LLM Assistant setup ===${NC}"
 
-# --- 1. Python -------------------------------------------------------------
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}ERROR: Python 3 is not installed. Install Python 3.10+ first.${NC}"
+# --- 1. Find a suitable Python (3.10+) -------------------------------------
+# The system default python3 is often too old (e.g. 3.6 on RHEL 8). Prefer a
+# newer interpreter if one is installed alongside it.
+PYTHON=""
+for cand in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$cand" >/dev/null 2>&1; then
+        if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+            PYTHON="$cand"; break
+        fi
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo -e "${RED}ERROR: Python 3.10+ is required but was not found.${NC}"
+    echo "Your default python3 may be too old. Install a newer one and re-run, e.g.:"
+    echo "    sudo dnf install python3.11      # RHEL / Rocky / Alma"
+    echo "    sudo apt install python3.11-venv # Debian / Ubuntu"
     exit 1
 fi
-echo -e "${GREEN}✓ Python found:${NC} $(python3 --version)"
+echo -e "${GREEN}✓ Using Python:${NC} $("$PYTHON" --version) ($PYTHON)"
 
 # --- 2. Virtual environment + dependencies ---------------------------------
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment (venv/)..."
-    python3 -m venv venv || { echo -e "${RED}Failed to create venv${NC}"; exit 1; }
+    "$PYTHON" -m venv venv || { echo -e "${RED}Failed to create venv${NC}"; exit 1; }
 fi
 # shellcheck disable=SC1091
 source venv/bin/activate
