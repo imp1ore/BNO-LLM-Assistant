@@ -35,13 +35,14 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 
 # Ollama Configuration (default provider; runs fully on-premises)
 # - embedding_model: turns text into vectors for retrieval (bge-base, 768-dim)
-# - language_model: generates the answers. llama3.2:3b is a good balance of
-#   quality and speed on CPU/modest GPUs. For higher quality on a stronger
-#   server, pull a larger model (e.g. `ollama pull llama3.1:8b`) and set it here.
+# - language_model: generates the answers. qwen2.5:7b is used by default here
+#   because it's strong on structured/technical text (configs, procedures) and
+#   this deployment's server has ample CPU/RAM (12 cores, 47GB+ free) to run it.
+#   For a lighter/faster server, set OLLAMA_LANGUAGE_MODEL=llama3.2:3b instead.
 OLLAMA_CONFIG = {
     "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     "embedding_model": os.getenv("OLLAMA_EMBEDDING_MODEL", "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf"),
-    "language_model": os.getenv("OLLAMA_LANGUAGE_MODEL", "llama3.2:3b"),
+    "language_model": os.getenv("OLLAMA_LANGUAGE_MODEL", "qwen2.5:7b"),
     "timeout": 120
 }
 
@@ -140,10 +141,11 @@ LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "10"))
 LOGIN_WINDOW_MINUTES = int(os.getenv("LOGIN_WINDOW_MINUTES", "5"))
 
 # RAG Configuration
-# Optimized for llama3.2:3b model (smaller context window)
-CHUNK_SIZE = 600  # Characters per chunk (optimized for 3B model - prevents overload)
-CHUNK_OVERLAP = 120  # Overlap between chunks (20% of chunk size for better context continuity)
-TOP_K_RETRIEVAL = 5  # Number of chunks to retrieve (reduced from 10 to prevent model overload)
+# Tuned for larger, detail-heavy documents (e.g. 300-page config/technical
+# manuals) on a 7B-class model with a large context window.
+CHUNK_SIZE = 900  # Characters per chunk (bigger = keeps related config details together)
+CHUNK_OVERLAP = 150  # ~17% overlap so a config block isn't split across chunk boundaries
+TOP_K_RETRIEVAL = 8  # Chunks retrieved per query (more coverage for long, detailed docs)
 SIMILARITY_THRESHOLD = 0.3  # Minimum similarity score to include a chunk (0.0-1.0, higher = more strict)
 
 # File Upload

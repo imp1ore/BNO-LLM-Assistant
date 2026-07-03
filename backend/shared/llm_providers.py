@@ -337,7 +337,12 @@ Answer:"""
         kwargs['options']['temperature'] = 0.0
         kwargs['options']['seed'] = 42
         # Allow longer, complete answers (was 300, which could cut off policy text).
-        kwargs['options']['num_predict'] = 512
+        kwargs['options']['num_predict'] = 768
+        # Ollama defaults to a small 2048-token context window regardless of the
+        # model's real limit. With TOP_K_RETRIEVAL=8 chunks of ~900 chars each,
+        # the prompt can exceed that easily on large/detailed documents, silently
+        # dropping context. Raise it explicitly (7B-class models handle this fine).
+        kwargs['options'].setdefault('num_ctx', 8192)
     
     if stream:
         full_response = ""
