@@ -36,6 +36,14 @@ if [ -d "$OLD_MODELS_DIR" ]; then
 fi
 echo "   ✓ $TARGET_DIR ready"
 
+echo "   Ensuring the Ollama service can traverse into it (home dirs are often locked to 700)..."
+walk_dir="$(dirname "$TARGET_DIR")"
+while [ "$walk_dir" != "/" ] && [ "$walk_dir" != "." ]; do
+    chmod o+x "$walk_dir" 2>/dev/null || true
+    walk_dir="$(dirname "$walk_dir")"
+done
+echo "   ✓ Added traverse (+x) permission on parent directories (contents remain unlistable to others)"
+
 echo "2) Updating Ollama service override..."
 mkdir -p "$OVERRIDE_DIR"
 touch "$OVERRIDE_FILE"
