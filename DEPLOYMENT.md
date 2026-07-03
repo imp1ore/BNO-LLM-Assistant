@@ -41,10 +41,11 @@ Confirm these are true on the server:
 - Port **9000** is open through the firewall (CCF) toward AVD users
 - You have the project folder on the box (e.g. unzipped into a working dir)
 
-> **Port note:** the **app** should own port **9000**. **Ollama** should stay on its
-> default **11434**, reachable only from localhost. Don't put Ollama on 9000 - that
-> collides with the app. If Ollama must run on another port, set `OLLAMA_BASE_URL`
-> in `.env` to match.
+> **Port note:** the **app** should own its own port (default **9000**). **Ollama**
+> should stay on **11434** on a standard install. On some BNO servers Ollama is
+> already on **9000** — do **not** run the app on the same port. After setup run:
+> `./scripts/configure_bno_server.sh` (moves the app to **8000** and points Ollama
+> at `http://localhost:9000`), then restart the service.
 
 ---
 
