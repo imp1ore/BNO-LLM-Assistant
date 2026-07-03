@@ -53,8 +53,12 @@ fi
 # shellcheck disable=SC1091
 source venv/bin/activate
 echo "Installing dependencies (this can take a few minutes the first time)..."
-pip install --upgrade pip >/dev/null
-pip install -r requirements.txt || { echo -e "${RED}Failed to install dependencies${NC}"; exit 1; }
+# Repair/bootstrap pip inside the venv first. This guards against a half-written
+# pip (e.g. from an earlier run that hit "no space left on device") and we always
+# call it via 'python -m pip' so a broken 'pip' shim can't stop us.
+python -m ensurepip --upgrade >/dev/null 2>&1 || true
+python -m pip install --upgrade pip || { echo -e "${RED}Failed to upgrade pip${NC}"; exit 1; }
+python -m pip install -r requirements.txt || { echo -e "${RED}Failed to install dependencies${NC}"; exit 1; }
 echo -e "${GREEN}✓ Dependencies installed${NC}"
 
 # --- 3. .env ---------------------------------------------------------------
