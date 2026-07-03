@@ -16,6 +16,10 @@ anthropic>=0.34.0
 
 # Vector Databases
 chromadb>=0.4.18  # Production-ready vector database
+# ChromaDB needs sqlite3 >= 3.35. On older OSes (RHEL 8 / CentOS) the system
+# SQLite is too old, so this wheel bundles a modern SQLite the app swaps in
+# (see backend/shared/vector_db.py). Harmless on systems that already have a new sqlite.
+pysqlite3-binary>=0.5.0; sys_platform == "linux"
 # Optional vector databases (for future use):
 # qdrant-client==1.7.0  # Uncomment if you want to use Qdrant
 # pinecone-client==2.2.4  # Uncomment if you want to use Pinecone

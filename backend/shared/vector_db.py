@@ -2,6 +2,17 @@
 Vector database abstraction layer
 Currently using ChromaDB for production-ready vector storage and search
 """
+# ChromaDB requires sqlite3 >= 3.35, but some systems (e.g. RHEL 8 / CentOS) ship
+# an older system SQLite that the stdlib `sqlite3` links against. If the modern
+# `pysqlite3-binary` wheel is installed, transparently swap it in so ChromaDB (and
+# SQLAlchemy) use the bundled newer SQLite. Must run before `import chromadb`.
+try:
+    __import__("pysqlite3")
+    import sys as _sys
+    _sys.modules["sqlite3"] = _sys.modules.pop("pysqlite3")
+except ImportError:
+    pass  # stdlib sqlite3 is new enough on this system
+
 from typing import List, Tuple, Optional
 from pathlib import Path
 import config
