@@ -36,9 +36,11 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 # Ollama Configuration (default provider; runs fully on-premises)
 # - embedding_model: turns text into vectors for retrieval (bge-base, 768-dim)
 # - language_model: generates the answers. qwen2.5:7b is used by default here
-#   because it's strong on structured/technical text (configs, procedures) and
-#   this deployment's server has ample CPU/RAM (12 cores, 47GB+ free) to run it.
-#   For a lighter/faster server, set OLLAMA_LANGUAGE_MODEL=llama3.2:3b instead.
+#   because it's strong on structured/technical text (configs, procedures).
+#   On CPU-only servers (no GPU), 7B can take 30-60s per answer. For faster
+#   responses with a smaller quality tradeoff, set:
+#     OLLAMA_LANGUAGE_MODEL=qwen2.5:3b
+#   (same model family, ~2-3x faster on CPU, still solid on structured text).
 OLLAMA_CONFIG = {
     "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     "embedding_model": os.getenv("OLLAMA_EMBEDDING_MODEL", "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf"),
