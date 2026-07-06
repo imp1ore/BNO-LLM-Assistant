@@ -226,6 +226,21 @@ server {
 - A GPU on the server dramatically speeds up indexing and answering; CPU-only
   works but is slower for big documents.
 
+### Speeding up answers on a CPU-only server
+
+Chat answers stream to the browser as they're generated (first words appear in
+a few seconds instead of waiting for the whole answer), which is already live
+with no setup needed. For extra CPU speed with no quality loss, run:
+
+```bash
+sudo ./scripts/tune_ollama_performance.sh
+```
+
+This enables flash attention and a quantized KV cache on the Ollama service
+(daemon-level settings, ~15-30% faster generation on CPU). Combine with
+`OLLAMA_LANGUAGE_MODEL=qwen2.5:3b` in `.env` (see `.env.example`) for a bigger
+speed win if 7B answers still feel too slow.
+
 ---
 
 ## 9. Day-to-day operations

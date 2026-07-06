@@ -2,7 +2,7 @@
 LLM Provider abstraction layer
 Switch between different LLM providers easily (Ollama, OpenAI, etc.)
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Iterator
 import re
 import config
 import json
@@ -51,6 +51,18 @@ def generate_response(prompt: str, context: str = None, **kwargs) -> str:
         return _generate_anthropic_response(prompt, context, **kwargs)
     else:
         raise ValueError(f"Provider not supported: {config.LLM_PROVIDER}")
+
+
+def generate_response_stream(prompt: str, context: str = None, **kwargs) -> Iterator[str]:
+    """Yield the response incrementally as it's generated, for providers that
+    support it (currently Ollama). Falls back to yielding the whole response
+    in one piece for providers without a streaming path implemented here, so
+    callers can always iterate the result the same way.
+    """
+    if config.LLM_PROVIDER == "ollama":
+        yield from _generate_ollama_response_stream(prompt, context, **kwargs)
+    else:
+        yield generate_response(prompt, context=context, **kwargs)
 
 
 # ============================================================================
@@ -283,15 +295,21 @@ def _clean_response(response: str) -> str:
     return cleaned
 
 
-def _generate_ollama_response(prompt: str, context: str = None, **kwargs) -> str:
-    """Generate response using Ollama"""
+def _ensure_ollama_client():
     global _ollama_client
-    
     if _ollama_client is None:
         import ollama
         base_url = config.OLLAMA_CONFIG.get("base_url", "http://localhost:11434")
         _ollama_client = ollama.Client(host=base_url)
-    
+    return _ollama_client
+
+
+def _build_ollama_messages(prompt: str, context: str = None):
+    """Build the (messages, short_circuit_response) pair for an Ollama chat call.
+
+    short_circuit_response is not None when the caller should skip the model
+    entirely (e.g. a trivial/empty query) and just use that canned response.
+    """
     if context:
         # Simplified prompt - less overloaded
         system_prompt = """You are an assistant for e&'s Business Network Operations (BNO) team. Answer questions using ONLY the information in the provided documents.
@@ -304,15 +322,15 @@ Rules:
 - If the answer is not in the documents, reply exactly: "I don't have that information in the available documents." """
     else:
         system_prompt = "You are a helpful network assistant for e&'s Business Network Operations (BNO) department. Always provide complete, thorough responses. Never cut off mid-sentence or leave responses incomplete."
-        
+
         # Check if query is too short or non-substantive
         query_lower = prompt.strip().lower()
         is_short_query = len(query_lower.split()) <= 2 or query_lower in ['test', 'hi', 'hello', 'hey']
-        
+
         if is_short_query and (not context or len(context.strip()) < 50):
             # For very short queries with no/insufficient context, give a brief helpful response
-            return "I'm here to help you with questions about e& Business Network Operations. Please ask a specific question about the documents you've uploaded, or upload documents first to get started."
-        
+            return None, "I'm here to help you with questions about e& Business Network Operations. Please ask a specific question about the documents you've uploaded, or upload documents first to get started."
+
     if context:
         user_prompt = f"""Documents:
 {context}
@@ -324,29 +342,49 @@ Answer using only the information from the documents above. Do not refer to the 
 Answer:"""
     else:
         user_prompt = prompt
-    
+
     messages = [
         {'role': 'system', 'content': system_prompt},
         {'role': 'user', 'content': user_prompt}
     ]
-    
-    stream = kwargs.pop('stream', False)
-    
+    return messages, None
+
+
+def _ollama_perf_options(kwargs: dict) -> dict:
+    """Apply the shared CPU performance tuning to an Ollama request's kwargs
+    (options dict + top-level keep_alive) and return kwargs for convenience.
+    """
     kwargs.setdefault('options', {})
     if isinstance(kwargs['options'], dict):
         kwargs['options']['temperature'] = 0.0
         kwargs['options']['seed'] = 42
-        # Allow longer, complete answers (was 300, which could cut off policy text).
-        kwargs['options']['num_predict'] = 768
+        # Bounds worst-case CPU decode time (was 768; see config.py notes).
+        kwargs['options']['num_predict'] = config.OLLAMA_NUM_PREDICT
         # Ollama defaults to a small 2048-token context window regardless of the
         # model's real limit. With TOP_K_RETRIEVAL=8 chunks of ~900 chars each,
         # the prompt can exceed that easily on large/detailed documents, silently
         # dropping context. Raise it explicitly (7B-class models handle this fine).
         kwargs['options'].setdefault('num_ctx', 8192)
-    
+        # Make sure Ollama actually uses all available CPU cores per request.
+        kwargs['options'].setdefault('num_thread', config.OLLAMA_NUM_THREAD)
+    kwargs.setdefault('keep_alive', config.OLLAMA_KEEP_ALIVE)
+    return kwargs
+
+
+def _generate_ollama_response(prompt: str, context: str = None, **kwargs) -> str:
+    """Generate response using Ollama"""
+    client = _ensure_ollama_client()
+
+    messages, short_circuit = _build_ollama_messages(prompt, context)
+    if short_circuit is not None:
+        return short_circuit
+
+    stream = kwargs.pop('stream', False)
+    kwargs = _ollama_perf_options(kwargs)
+
     if stream:
         full_response = ""
-        for chunk in _ollama_client.chat(
+        for chunk in client.chat(
             model=config.OLLAMA_CONFIG["language_model"],
             messages=messages,
             stream=True,
@@ -362,13 +400,13 @@ Answer:"""
             return "I don't have that information in the available documents."
         return cleaned
     else:
-        response = _ollama_client.chat(
+        response = client.chat(
             model=config.OLLAMA_CONFIG["language_model"],
             messages=messages,
             **kwargs
         )
         result = response.get('message', {}).get('content', '')
-        
+
         if not result or result.strip() == '':
             return "I apologize, but I didn't receive a response. Please try again."
 
@@ -376,6 +414,41 @@ Answer:"""
         if not cleaned or len(cleaned.strip()) == 0:
             return "I don't have that information in the available documents."
         return cleaned
+
+
+def _generate_ollama_response_stream(prompt: str, context: str = None, **kwargs) -> Iterator[str]:
+    """Yield raw response text chunks as Ollama generates them.
+
+    Chunks are NOT run through _clean_response (that needs the full text to
+    de-dupe/strip markdown) - callers that need the polished final text should
+    run _clean_response() on the accumulated chunks once streaming finishes.
+    """
+    client = _ensure_ollama_client()
+
+    messages, short_circuit = _build_ollama_messages(prompt, context)
+    if short_circuit is not None:
+        yield short_circuit
+        return
+
+    kwargs.pop('stream', None)
+    kwargs = _ollama_perf_options(kwargs)
+
+    got_any = False
+    for chunk in client.chat(
+        model=config.OLLAMA_CONFIG["language_model"],
+        messages=messages,
+        stream=True,
+        **kwargs
+    ):
+        # The ollama client returns ChatResponse objects, which support the same
+        # dict-style .get() used for the non-streaming response below.
+        piece = chunk.get('message', {}).get('content', '')
+        if piece:
+            got_any = True
+            yield piece
+
+    if not got_any:
+        yield "I apologize, but I didn't receive a response. Please try again."
 
 
 # ============================================================================

@@ -48,6 +48,22 @@ OLLAMA_CONFIG = {
     "timeout": 120
 }
 
+# --- CPU inference performance tuning ---------------------------------------
+# These matter most on CPU-only servers (no GPU), where each answer's speed is
+# bound by threads (prompt reading) and memory bandwidth (answer writing).
+#
+# Threads Ollama uses per request. Defaults to all detected CPU cores; override
+# if the box is shared with other services and shouldn't be fully saturated.
+OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", str(os.cpu_count() or 4)))
+# How long Ollama keeps the model loaded in RAM after a request. Prevents the
+# next request from paying a full model-reload cost if it arrives after Ollama's
+# default 5-minute unload timeout.
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+# Max tokens generated per answer. Bounds worst-case response time on CPU (every
+# token costs real seconds without a GPU) while staying long enough for complete
+# technical/policy answers.
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "512"))
+
 # OpenAI Configuration (Production Option)
 OPENAI_CONFIG = {
     "api_key": os.getenv("OPENAI_API_KEY", ""),

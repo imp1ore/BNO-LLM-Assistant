@@ -5,10 +5,12 @@ Handles authentication, documents, and chat
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Header, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import asyncio
+import json
+import threading
 import os
 import sys
 from pathlib import Path
@@ -19,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.shared.database import get_db, init_db, User, Chat, Message, Document, SessionLocal
 from backend.shared.document_processor import extract_text, split_text_into_chunks
-from backend.shared.llm_providers import get_embedding, get_embeddings_batch
+from backend.shared.llm_providers import get_embedding, get_embeddings_batch, _clean_response as clean_llm_response
 from backend.shared.vector_db import add_documents, init_vector_db
 from backend.api_server.auth import (
     verify_password, get_password_hash, create_access_token, decode_access_token,
@@ -455,6 +457,102 @@ async def send_message_v2(request: MessageRequest, current_user: User = Depends(
             "created_at": assistant_message.created_at
         }
     }
+
+
+@app.post("/api/chat/message/stream")
+async def send_message_stream(request: MessageRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Send a message and stream the answer back as it's generated (Server-Sent
+    Events style: newline-delimited "data: {json}\\n\\n" frames).
+
+    Streaming makes long CPU-bound generations feel much faster - the first
+    words show up in a few seconds instead of waiting for the entire answer.
+    """
+    content = request.content
+    chat_id = request.chat_id
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content is required")
+
+    if chat_id:
+        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == current_user.id).first()
+        if not chat:
+            raise HTTPException(status_code=404, detail="Chat not found")
+    else:
+        chat = Chat(user_id=current_user.id, title=content[:50])
+        db.add(chat)
+        db.commit()
+        db.refresh(chat)
+
+    user_message = Message(chat_id=chat.id, role="user", content=content)
+    db.add(user_message)
+    db.commit()
+
+    chat_id_final = chat.id
+
+    def _sse(payload: dict) -> str:
+        return f"data: {json.dumps(payload)}\n\n"
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        SENTINEL_END = object()
+
+        def producer():
+            try:
+                for piece in _rag_engine.query_stream(content):
+                    loop.call_soon_threadsafe(queue.put_nowait, piece)
+            except Exception as e:
+                logger.exception(f"Error during streamed RAG generation: {e}")
+                loop.call_soon_threadsafe(queue.put_nowait, {"__error__": str(e)})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, SENTINEL_END)
+
+        threading.Thread(target=producer, daemon=True).start()
+
+        raw_text = ""
+        errored = False
+        while True:
+            item = await queue.get()
+            if item is SENTINEL_END:
+                break
+            if isinstance(item, dict) and "__error__" in item:
+                errored = True
+                yield _sse({"type": "error", "detail": "Something went wrong generating the response. Please try again."})
+                continue
+            raw_text += item
+            yield _sse({"type": "chunk", "text": item})
+
+        if errored:
+            return
+
+        final_response = clean_llm_response(raw_text) or raw_text.strip()
+        if not final_response:
+            final_response = "I apologize, but I didn't receive a response. Please try again."
+
+        # New DB session: the request-scoped one may be tied to a different
+        # thread/loop context by the time this generator finishes streaming.
+        stream_db = SessionLocal()
+        try:
+            assistant_message = Message(chat_id=chat_id_final, role="assistant", content=final_response)
+            stream_db.add(assistant_message)
+            stream_db.commit()
+            stream_db.refresh(assistant_message)
+
+            chat_row = stream_db.query(Chat).filter(Chat.id == chat_id_final).first()
+            if chat_row:
+                chat_row.updated_at = datetime.utcnow()
+                stream_db.commit()
+
+            yield _sse({
+                "type": "done",
+                "chat_id": chat_id_final,
+                "response": final_response,
+                "message_id": assistant_message.id,
+            })
+        finally:
+            stream_db.close()
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/api/chats/{chat_id}/messages", response_model=List[MessageResponse])

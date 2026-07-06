@@ -1,7 +1,7 @@
 """
 RAG Engine - Core retrieval and generation logic
 """
-from typing import List, Tuple
+from typing import List, Tuple, Iterator
 import sys
 from pathlib import Path
 import json
@@ -9,7 +9,7 @@ import json
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from backend.shared.llm_providers import get_embedding, generate_response
+from backend.shared.llm_providers import get_embedding, generate_response, generate_response_stream
 from backend.shared.vector_db import search, get_vector_db
 import config
 
@@ -147,6 +147,55 @@ class RAGEngine:
         
         return response
     
+    def _prepare(self, query: str, top_k: int = None):
+        """Shared retrieval + validation for query() and query_stream().
+
+        Returns a tuple (canned_response, chunks, scores). If canned_response
+        is not None, the caller should use it directly without calling the LLM
+        (e.g. trivial query, or nothing relevant was retrieved).
+        """
+        query_lower = query.strip().lower()
+        is_short_query = len(query_lower.split()) <= 2 or query_lower in ['test', 'hi', 'hello', 'hey', 'ok', 'yes', 'no']
+
+        if is_short_query:
+            return (
+                "I'm here to help you with questions about e& Business Network Operations. "
+                "Please ask a specific question about the documents you've uploaded, or upload documents first to get started.",
+                [], []
+            )
+
+        retrieved = self.retrieve(query, top_k=top_k)
+        if not retrieved:
+            return (
+                "I don't have that information in the available documents. Please check if the documents contain this information or try rephrasing your question.",
+                [], []
+            )
+
+        chunks = [chunk for chunk, score in retrieved if chunk is not None and isinstance(chunk, str) and chunk.strip()]
+        scores = [score for chunk, score in retrieved if chunk is not None and isinstance(chunk, str) and chunk.strip()]
+        max_similarity = max(scores) if scores else 0.0
+
+        if len(chunks) == 0 or max_similarity < config.SIMILARITY_THRESHOLD:
+            return (
+                "I don't have that information in the available documents. Please check if the documents contain this information or try rephrasing your question.",
+                chunks, scores
+            )
+
+        return None, chunks, scores
+
+    def query_stream(self, query: str, top_k: int = None) -> Iterator[str]:
+        """Same pipeline as query(), but yields the answer incrementally as the
+        LLM generates it. Retrieval happens synchronously first (it's fast);
+        only the generation step is streamed.
+        """
+        canned, chunks, _scores = self._prepare(query, top_k=top_k)
+        if canned is not None:
+            yield canned
+            return
+
+        context = "\n".join([f"- {chunk}" for chunk in chunks])
+        yield from generate_response_stream(query, context=context)
+
     def query(self, query: str, top_k: int = None) -> dict:
         """
         Complete RAG pipeline: retrieve + generate

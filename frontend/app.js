@@ -1057,7 +1057,7 @@ async function sendMessage() {
     }
     
     try {
-        const response = await secureFetch(`${API_BASE_URL}/chat/message`, {
+        const response = await secureFetch(`${API_BASE_URL}/chat/message/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1065,53 +1065,9 @@ async function sendMessage() {
                 chat_id: currentChatId || null
             })
         });
-        
-        if (response.ok) {
-            const data = await response.json();
-            
-            // CRITICAL: Ensure chat screen is visible before adding messages
-            const chatScreenEl = document.getElementById('chatScreen');
-            if (chatScreenEl) {
-                chatScreenEl.style.display = 'flex';
-            }
-            
-            // Update current chat ID if new chat was created
-            if (data.chat_id && !currentChatId) {
-                currentChatId = data.chat_id;
-                // Refresh chat list in background (don't wait for it) - but don't clear messages
-                // Use setTimeout to ensure messages are displayed first, then update chat list
-                setTimeout(() => {
-                    loadChats().catch(err => console.error('Error loading chats:', err));
-                }, 500);
-            }
-            
-            // CRITICAL: Ensure messages container is visible and not cleared
-            const messagesContainer = document.getElementById('messagesContainer');
-            if (messagesContainer) {
-                // Remove empty state if it exists, but keep existing messages
-                const emptyState = messagesContainer.querySelector('.empty-state');
-                if (emptyState) emptyState.remove();
-            }
-            
-            // Remove thinking indicator
-            const thinkingEl = document.getElementById(thinkingId);
-            if (thinkingEl) {
-                thinkingEl.remove();
-            }
-            
-            // Add AI response - check if response exists
-            const aiResponse = data.response || data.assistant_reply?.content || data.answer || '';
-            if (!aiResponse || aiResponse.trim() === '') {
-                console.error('Empty response from server:', data);
-                addMessage('assistant', 'I apologize, but I didn\'t receive a response. Please try again.');
-            } else {
-                addMessage('assistant', aiResponse);
-            }
-            
-            // Ensure chat screen stays visible after adding message
-            if (chatScreenEl) {
-                chatScreenEl.style.display = 'flex';
-            }
+
+        if (response.ok && response.body) {
+            await handleStreamedResponse(response, thinkingId);
         } else {
             // Remove thinking indicator
             const thinkingEl = document.getElementById(thinkingId);
@@ -1134,6 +1090,91 @@ async function sendMessage() {
             sendBtn.disabled = false;
             sendBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
         }
+    }
+}
+
+// Reads the "data: {json}\n\n" stream from /api/chat/message/stream and fills
+// in the assistant bubble progressively as text arrives.
+async function handleStreamedResponse(response, thinkingId) {
+    const chatScreenEl = document.getElementById('chatScreen');
+    if (chatScreenEl) {
+        chatScreenEl.style.display = 'flex';
+    }
+
+    const messagesContainer = document.getElementById('messagesContainer');
+    if (messagesContainer) {
+        const emptyState = messagesContainer.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+    }
+
+    // Swap the "Thinking..." bubble for an empty assistant bubble we fill in live
+    const thinkingEl = document.getElementById(thinkingId);
+    if (thinkingEl) {
+        thinkingEl.remove();
+    }
+    addMessage('assistant', '\u200B', false); // zero-width space placeholder while first tokens arrive (survives the empty-content check, unlike a plain space)
+    const assistantBubble = messagesContainer ? messagesContainer.querySelector('.message.assistant:last-child') : null;
+    const assistantContentEl = assistantBubble ? assistantBubble.querySelector('.message-content') : null;
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+    let gotAnyText = false;
+
+    const applyText = (text) => {
+        if (!assistantContentEl) return;
+        assistantContentEl.textContent = text;
+        if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    };
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundary;
+        while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+            const rawEvent = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            if (!rawEvent.startsWith('data: ')) continue;
+
+            let evt;
+            try {
+                evt = JSON.parse(rawEvent.slice(6));
+            } catch (e) {
+                continue;
+            }
+
+            if (evt.type === 'chunk') {
+                accumulated += evt.text;
+                gotAnyText = true;
+                applyText(accumulated);
+            } else if (evt.type === 'done') {
+                accumulated = evt.response || accumulated;
+                gotAnyText = true;
+                applyText(accumulated);
+                if (evt.chat_id && !currentChatId) {
+                    currentChatId = evt.chat_id;
+                    setTimeout(() => {
+                        loadChats().catch(err => console.error('Error loading chats:', err));
+                    }, 500);
+                }
+            } else if (evt.type === 'error') {
+                applyText(`Error: ${evt.detail || 'Something went wrong. Please try again.'}`);
+                gotAnyText = true;
+            }
+        }
+    }
+
+    if (!gotAnyText) {
+        applyText("I apologize, but I didn't receive a response. Please try again.");
+    }
+
+    if (chatScreenEl) {
+        chatScreenEl.style.display = 'flex';
     }
 }
 
