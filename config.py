@@ -31,7 +31,15 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # LLM PROVIDER CONFIGURATION
 # ============================================================================
 # Options: "ollama", "openai", "anthropic", "vllm", "azure_openai"
+# LLM_PROVIDER is the default for BOTH embeddings and answer generation.
+# Override just one independently with EMBEDDING_PROVIDER / ANSWER_PROVIDER -
+# most commonly to get fast OpenAI answers while keeping embeddings on Ollama,
+# since switching the embedding provider alone makes ChromaDB compare vectors
+# from two different spaces and silently breaks retrieval for every document
+# indexed before the switch (looks like "no results", not an error).
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", LLM_PROVIDER)
+ANSWER_PROVIDER = os.getenv("ANSWER_PROVIDER", LLM_PROVIDER)
 
 # Ollama Configuration (default provider; runs fully on-premises)
 # - embedding_model: turns text into vectors for retrieval (bge-base, 768-dim)

@@ -290,6 +290,31 @@ ENABLE_VISION_EXTRACTION=true
 Then `sudo systemctl restart bnollm` and re-upload (or Retry) any documents
 with diagrams so they get indexed with the new image descriptions.
 
+### Fast chat answers via OpenAI (optional, bigger data exposure than vision)
+
+Local Ollama answers are slow on CPU-only hardware (30-60s+ for a 7B model).
+If that's not acceptable and OpenAI is cleared for use, you can route just
+the answer-generation step to OpenAI (`gpt-4o-mini`, near-instant) while
+**keeping embeddings on Ollama** so your already-indexed documents keep
+working:
+
+```bash
+# in .env - do NOT also set EMBEDDING_PROVIDER=openai on a server with
+# existing indexed documents (see the .env.example comment for why)
+OPENAI_API_KEY=sk-...
+ANSWER_PROVIDER=openai
+```
+
+```bash
+sudo systemctl restart bnollm
+```
+
+**This is a bigger data exposure than vision extraction** - every question
+and all retrieved document context (not just images) now goes to OpenAI.
+Confirm that's cleared with BNO's data policy before enabling on real
+documents. `./scripts/doctor.sh` will confirm the key/connectivity are good
+before you flip this on.
+
 ---
 
 ## 9. Day-to-day operations

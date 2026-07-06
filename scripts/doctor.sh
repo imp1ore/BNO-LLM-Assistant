@@ -155,7 +155,30 @@ if [ -d "venv" ]; then
     fi
 fi
 
-# --- 7. OpenAI connectivity (only if a key is configured) --------------------
+# --- 7. Dangerous provider mismatch (embeddings switched after documents
+# were already indexed with a different provider) ---------------------------
+if [ -d "venv" ]; then
+    EMB_PROVIDER=$(python3 -c "import sys; sys.path.insert(0,'.'); import config; print(config.EMBEDDING_PROVIDER)" 2>/dev/null || echo "ollama")
+    # get_vector_db_status() prints its own init log lines to stdout, so pull
+    # only the last line (our actual printed count) rather than the whole output.
+    CHUNK_COUNT=$(python3 -c "
+import sys; sys.path.insert(0,'.')
+try:
+    from backend.shared.vector_db import get_vector_db_status
+    status = get_vector_db_status()
+    count = status.get('total_chunks', 0)
+    print(count if isinstance(count, int) else 0)
+except Exception:
+    print(0)
+" 2>/dev/null | tail -1 | tr -d '[:space:]')
+    CHUNK_COUNT="${CHUNK_COUNT:-0}"
+    case "$CHUNK_COUNT" in ''|*[!0-9]*) CHUNK_COUNT=0 ;; esac
+    if [ "$EMB_PROVIDER" = "openai" ] && [ "$CHUNK_COUNT" -gt 0 ]; then
+        note_issue "EMBEDDING_PROVIDER=openai but $CHUNK_COUNT chunk(s) are already indexed (likely with Ollama). Retrieval for those documents will silently return nothing useful. Re-index everything after this switch, or unset EMBEDDING_PROVIDER to keep it on Ollama."
+    fi
+fi
+
+# --- 8. OpenAI connectivity (only if a key is configured) --------------------
 if [ -d "venv" ]; then
     OPENAI_KEY_VAL=$(grep '^OPENAI_API_KEY=' .env 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '[:space:]')
     if [ -n "$OPENAI_KEY_VAL" ]; then

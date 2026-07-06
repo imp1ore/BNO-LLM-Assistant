@@ -16,13 +16,14 @@ _anthropic_client = None
 _openai_vision_client = None
 
 def get_embedding(text: str) -> List[float]:
-    """Get embedding vector for text based on configured provider"""
-    if config.LLM_PROVIDER == "ollama":
+    """Get embedding vector for text based on the configured embedding provider"""
+    provider = config.EMBEDDING_PROVIDER
+    if provider == "ollama":
         return _get_ollama_embedding(text)
-    elif config.LLM_PROVIDER == "openai":
+    elif provider == "openai":
         return _get_openai_embedding(text)
     else:
-        raise ValueError(f"Embedding not supported for provider: {config.LLM_PROVIDER}")
+        raise ValueError(f"Embedding not supported for provider: {provider}")
 
 
 def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
@@ -33,7 +34,7 @@ def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
     """
     if not texts:
         return []
-    if config.LLM_PROVIDER == "ollama":
+    if config.EMBEDDING_PROVIDER == "ollama":
         try:
             return _get_ollama_embeddings_batch(texts)
         except Exception:
@@ -44,25 +45,29 @@ def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
 
 
 def generate_response(prompt: str, context: str = None, **kwargs) -> str:
-    """Generate response using configured LLM provider"""
-    if config.LLM_PROVIDER == "ollama":
+    """Generate response using the configured answer-generation provider"""
+    provider = config.ANSWER_PROVIDER
+    if provider == "ollama":
         return _generate_ollama_response(prompt, context, **kwargs)
-    elif config.LLM_PROVIDER == "openai":
+    elif provider == "openai":
         return _generate_openai_response(prompt, context, **kwargs)
-    elif config.LLM_PROVIDER == "anthropic":
+    elif provider == "anthropic":
         return _generate_anthropic_response(prompt, context, **kwargs)
     else:
-        raise ValueError(f"Provider not supported: {config.LLM_PROVIDER}")
+        raise ValueError(f"Provider not supported: {provider}")
 
 
 def generate_response_stream(prompt: str, context: str = None, **kwargs) -> Iterator[str]:
     """Yield the response incrementally as it's generated, for providers that
-    support it (currently Ollama). Falls back to yielding the whole response
-    in one piece for providers without a streaming path implemented here, so
+    support it (Ollama, OpenAI). Falls back to yielding the whole response in
+    one piece for providers without a streaming path implemented here, so
     callers can always iterate the result the same way.
     """
-    if config.LLM_PROVIDER == "ollama":
+    provider = config.ANSWER_PROVIDER
+    if provider == "ollama":
         yield from _generate_ollama_response_stream(prompt, context, **kwargs)
+    elif provider == "openai":
+        yield from _generate_openai_response_stream(prompt, context, **kwargs)
     else:
         yield generate_response(prompt, context=context, **kwargs)
 
@@ -306,8 +311,14 @@ def _ensure_ollama_client():
     return _ollama_client
 
 
-def _build_ollama_messages(prompt: str, context: str = None):
-    """Build the (messages, short_circuit_response) pair for an Ollama chat call.
+def _build_chat_messages(prompt: str, context: str = None):
+    """Build the (messages, short_circuit_response) pair for a chat call.
+
+    Shared by every provider (Ollama, OpenAI, ...) so the grounding rules -
+    answer only from documents, keep facts exact, use the exact "I don't have
+    that information..." phrase when it's not there - stay identical no
+    matter which provider is answering. _clean_response()'s de-duplication
+    logic also depends on that exact phrase, so don't drift the wording here.
 
     short_circuit_response is not None when the caller should skip the model
     entirely (e.g. a trivial/empty query) and just use that canned response.
@@ -377,7 +388,7 @@ def _generate_ollama_response(prompt: str, context: str = None, **kwargs) -> str
     """Generate response using Ollama"""
     client = _ensure_ollama_client()
 
-    messages, short_circuit = _build_ollama_messages(prompt, context)
+    messages, short_circuit = _build_chat_messages(prompt, context)
     if short_circuit is not None:
         return short_circuit
 
@@ -427,7 +438,7 @@ def _generate_ollama_response_stream(prompt: str, context: str = None, **kwargs)
     """
     client = _ensure_ollama_client()
 
-    messages, short_circuit = _build_ollama_messages(prompt, context)
+    messages, short_circuit = _build_chat_messages(prompt, context)
     if short_circuit is not None:
         yield short_circuit
         return
@@ -470,32 +481,70 @@ def _get_openai_embedding(text: str) -> List[float]:
     return response.data[0].embedding
 
 
-def _generate_openai_response(prompt: str, context: str = None, **kwargs) -> str:
-    """Generate response using OpenAI"""
+def _ensure_openai_client():
     global _openai_client
     if _openai_client is None:
         from openai import OpenAI
         _openai_client = OpenAI(api_key=config.OPENAI_CONFIG["api_key"])
-    
-    messages = []
-    if context:
-        messages.append({
-            "role": "system",
-            "content": f"You are a helpful AI assistant for the e& Business Network Operations department. Use only the provided context to answer questions. If information is not in the context, clearly state that."
-        })
-        messages.append({
-            "role": "user",
-            "content": f"Context:\n{context}\n\nQuestion: {prompt}"
-        })
-    else:
-        messages.append({"role": "user", "content": prompt})
-    
-    response = _openai_client.chat.completions.create(
+    return _openai_client
+
+
+def _generate_openai_response(prompt: str, context: str = None, **kwargs) -> str:
+    """Generate response using OpenAI, with the same grounding rules as Ollama."""
+    client = _ensure_openai_client()
+
+    messages, short_circuit = _build_chat_messages(prompt, context)
+    if short_circuit is not None:
+        return short_circuit
+
+    kwargs.pop('stream', None)
+    response = client.chat.completions.create(
         model=config.OPENAI_CONFIG["language_model"],
         messages=messages,
+        temperature=0,
         **kwargs
     )
-    return response.choices[0].message.content
+    result = response.choices[0].message.content or ""
+
+    if not result.strip():
+        return "I apologize, but I didn't receive a response. Please try again."
+
+    cleaned = _clean_response(result)
+    if not cleaned or len(cleaned.strip()) == 0:
+        return "I don't have that information in the available documents."
+    return cleaned
+
+
+def _generate_openai_response_stream(prompt: str, context: str = None, **kwargs) -> Iterator[str]:
+    """Yield raw response text chunks as OpenAI generates them (real streaming,
+    not a fake one-shot yield) - same grounding rules as the non-streaming path.
+    """
+    client = _ensure_openai_client()
+
+    messages, short_circuit = _build_chat_messages(prompt, context)
+    if short_circuit is not None:
+        yield short_circuit
+        return
+
+    kwargs.pop('stream', None)
+    got_any = False
+    stream = client.chat.completions.create(
+        model=config.OPENAI_CONFIG["language_model"],
+        messages=messages,
+        temperature=0,
+        stream=True,
+        **kwargs
+    )
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        piece = chunk.choices[0].delta.content or ""
+        if piece:
+            got_any = True
+            yield piece
+
+    if not got_any:
+        yield "I apologize, but I didn't receive a response. Please try again."
 
 
 # ============================================================================
