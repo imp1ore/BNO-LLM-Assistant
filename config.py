@@ -65,10 +65,15 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "512"))
 
 # OpenAI Configuration (Production Option)
+# NOTE: switching LLM_PROVIDER to "openai" sends questions and document context
+# to OpenAI's API over the internet - confirm this is acceptable for BNO's data
+# policy before pointing this at real/sensitive documents.
 OPENAI_CONFIG = {
     "api_key": os.getenv("OPENAI_API_KEY", ""),
-    "embedding_model": "text-embedding-3-small",
-    "language_model": "gpt-3.5-turbo",
+    "embedding_model": os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+    # gpt-4o-mini: cheap, fast, has vision. gpt-4o: pricier, best for detailed
+    # image/diagram comprehension.
+    "language_model": os.getenv("OPENAI_LANGUAGE_MODEL", "gpt-4o-mini"),
     "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 }
 
