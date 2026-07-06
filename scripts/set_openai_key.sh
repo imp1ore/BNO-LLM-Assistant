@@ -26,13 +26,28 @@ fi
 echo "Paste your OpenAI API key below. Input is hidden and will NOT be shown"
 echo "on screen, saved to shell history, or sent anywhere except into .env."
 echo -n "OpenAI API key: "
-read -rs OPENAI_KEY
+read -rs OPENAI_KEY_RAW
 echo
 echo
+
+# Trim leading/trailing whitespace (paste artifacts are the #1 cause of
+# "network is fine but key rejected" - a real OpenAI key never has spaces).
+OPENAI_KEY="$(printf '%s' "$OPENAI_KEY_RAW" | tr -d '[:space:]')"
+unset OPENAI_KEY_RAW
 
 if [ -z "$OPENAI_KEY" ]; then
     echo "No key entered - aborting, .env not changed."
     exit 1
+fi
+
+if [ "${#OPENAI_KEY}" -lt 40 ]; then
+    echo "Warning: that key looks unusually short (${#OPENAI_KEY} chars) for an OpenAI key."
+    echo "It may have been cut off during paste."
+    read -rp "Continue anyway? [y/N] " CONFIRM_LEN
+    if [[ ! "$CONFIRM_LEN" =~ ^[Yy]$ ]]; then
+        echo "Aborted - .env not changed."
+        exit 1
+    fi
 fi
 
 if [[ "$OPENAI_KEY" != sk-* ]]; then

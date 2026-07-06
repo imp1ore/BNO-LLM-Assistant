@@ -69,7 +69,10 @@ OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "512"))
 # to OpenAI's API over the internet - confirm this is acceptable for BNO's data
 # policy before pointing this at real/sensitive documents.
 OPENAI_CONFIG = {
-    "api_key": os.getenv("OPENAI_API_KEY", ""),
+    # .strip() guards against a stray leading/trailing space or newline from a
+    # copy-paste into .env - that alone is enough to make OpenAI reject the key
+    # with a 401 that looks identical to an actually-invalid key.
+    "api_key": os.getenv("OPENAI_API_KEY", "").strip(),
     "embedding_model": os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
     # gpt-4o-mini: cheap, fast, has vision. gpt-4o: pricier, best for detailed
     # image/diagram comprehension.
