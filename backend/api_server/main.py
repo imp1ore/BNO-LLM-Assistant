@@ -74,13 +74,18 @@ if frontend_path.exists():
     # Serve CSS and JS files from root
     app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
     # Also serve individual files from root for easier access
+    # no-cache (not no-store) so browsers always revalidate with the server
+    # before using a cached copy - deploys take effect on next reload instead
+    # of silently running stale JS/CSS until someone hard-refreshes.
+    _no_cache_headers = {"Cache-Control": "no-cache, must-revalidate"}
+
     @app.get("/styles.css")
     async def get_styles():
-        return FileResponse(str(frontend_path / "styles.css"))
-    
+        return FileResponse(str(frontend_path / "styles.css"), headers=_no_cache_headers)
+
     @app.get("/app.js")
     async def get_app_js():
-        return FileResponse(str(frontend_path / "app.js"))
+        return FileResponse(str(frontend_path / "app.js"), headers=_no_cache_headers)
 
 
 # ============================================================================
@@ -1097,7 +1102,7 @@ async def root():
     """Serve frontend"""
     frontend_index = frontend_path / "index.html"
     if frontend_index.exists():
-        return FileResponse(str(frontend_index))
+        return FileResponse(str(frontend_index), headers={"Cache-Control": "no-cache, must-revalidate"})
     return {"message": "BNO LLM Assistant API", "status": "running"}
 
 
