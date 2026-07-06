@@ -77,6 +77,25 @@ OPENAI_CONFIG = {
     "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 }
 
+# --- Image/diagram vision extraction (optional, independent of LLM_PROVIDER) -
+# When enabled, images embedded in uploaded PDFs/PPTX are pulled out during
+# indexing and described by an OpenAI vision model; the description text is
+# added to the searchable index alongside the document's regular text chunks.
+# This lets the RAG answer questions about diagrams/screenshots even while
+# LLM_PROVIDER stays "ollama" for normal text Q&A (privacy/cost stay local;
+# only the images themselves are sent to OpenAI).
+# NOTE: this sends document images to OpenAI's API over the internet. Leave
+# disabled until BNO's data policy confirms that's acceptable.
+ENABLE_VISION_EXTRACTION = os.getenv("ENABLE_VISION_EXTRACTION", "false").lower() == "true"
+# gpt-4o (not gpt-4o-mini) reads small/dense diagram text far more reliably -
+# see DEPLOYMENT.md vision comparison notes.
+VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o")
+# Skip tiny embedded images (logos, bullet icons, dividers) - only describe
+# images large enough to plausibly be a real diagram/screenshot.
+VISION_MIN_IMAGE_DIM = int(os.getenv("VISION_MIN_IMAGE_DIM", "150"))
+# Hard cap per document to bound worst-case cost/time on image-heavy files.
+VISION_MAX_IMAGES_PER_DOC = int(os.getenv("VISION_MAX_IMAGES_PER_DOC", "20"))
+
 # Anthropic Configuration (Production Option)
 ANTHROPIC_CONFIG = {
     "api_key": os.getenv("ANTHROPIC_API_KEY", ""),

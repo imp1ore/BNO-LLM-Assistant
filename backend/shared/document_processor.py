@@ -3,8 +3,9 @@ Document processing module - handles PDF, DOCX, PPTX, TXT files
 Extracts text and splits into chunks for RAG
 """
 import os
+import hashlib
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 import config
 
 # Document processing imports
@@ -23,6 +24,11 @@ try:
 except ImportError:
     Presentation = None
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
 
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF file"""
@@ -39,6 +45,70 @@ def extract_text_from_pdf(file_path: str) -> str:
         raise Exception(f"Error reading PDF: {str(e)}")
     
     return text.strip()
+
+
+def extract_images_from_pdf(
+    file_path: str,
+    min_dim: int = None,
+    max_images: int = None,
+) -> List[Tuple[int, bytes, str]]:
+    """Pull embedded images out of a PDF for optional vision description.
+
+    Returns a list of (page_number, image_bytes, image_ext) tuples, 1-indexed
+    pages, e.g. image_ext "png" or "jpeg". Filters out tiny images (icons/
+    logos/dividers) and exact duplicates (the same image repeated across
+    pages/slide masters), and stops once max_images is reached, to bound
+    cost/time on image-heavy documents.
+    """
+    if fitz is None:
+        return []
+
+    min_dim = config.VISION_MIN_IMAGE_DIM if min_dim is None else min_dim
+    max_images = config.VISION_MAX_IMAGES_PER_DOC if max_images is None else max_images
+
+    results: List[Tuple[int, bytes, str]] = []
+    seen_hashes = set()
+
+    try:
+        doc = fitz.open(file_path)
+        try:
+            for page_index in range(len(doc)):
+                if len(results) >= max_images:
+                    break
+                page = doc[page_index]
+                for img in page.get_images(full=True):
+                    if len(results) >= max_images:
+                        break
+                    xref = img[0]
+                    try:
+                        base_image = doc.extract_image(xref)
+                    except Exception:
+                        continue
+                    if not base_image:
+                        continue
+
+                    width = base_image.get("width", 0)
+                    height = base_image.get("height", 0)
+                    if width < min_dim or height < min_dim:
+                        continue
+
+                    image_bytes = base_image.get("image")
+                    if not image_bytes:
+                        continue
+
+                    digest = hashlib.sha1(image_bytes).hexdigest()
+                    if digest in seen_hashes:
+                        continue
+                    seen_hashes.add(digest)
+
+                    ext = base_image.get("ext", "png")
+                    results.append((page_index + 1, image_bytes, ext))
+        finally:
+            doc.close()
+    except Exception as e:
+        print(f"[VISION] Failed to extract images from {file_path}: {e}")
+
+    return results
 
 
 def extract_text_from_docx(file_path: str) -> str:

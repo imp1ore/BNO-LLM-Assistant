@@ -2,8 +2,9 @@
 LLM Provider abstraction layer
 Switch between different LLM providers easily (Ollama, OpenAI, etc.)
 """
-from typing import List, Dict, Any, Iterator
+from typing import List, Dict, Any, Iterator, Optional
 import re
+import base64
 import config
 import json
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 _ollama_client = None
 _openai_client = None
 _anthropic_client = None
+_openai_vision_client = None
 
 def get_embedding(text: str) -> List[float]:
     """Get embedding vector for text based on configured provider"""
@@ -494,6 +496,63 @@ def _generate_openai_response(prompt: str, context: str = None, **kwargs) -> str
         **kwargs
     )
     return response.choices[0].message.content
+
+
+# ============================================================================
+# Vision (image/diagram description) - independent of LLM_PROVIDER
+# ============================================================================
+def describe_image(image_bytes: bytes, image_ext: str = "png") -> Optional[str]:
+    """Describe an image using OpenAI vision (gpt-4o by default).
+
+    Used during indexing to turn embedded diagrams/screenshots into searchable
+    text. Returns None (caller should skip this image) if no OpenAI API key is
+    configured or the call fails - this must never take down the whole
+    document indexing job over one bad image.
+    """
+    global _openai_vision_client
+    api_key = config.OPENAI_CONFIG.get("api_key")
+    if not api_key:
+        return None
+
+    if _openai_vision_client is None:
+        from openai import OpenAI
+        _openai_vision_client = OpenAI(api_key=api_key)
+
+    mime = "jpeg" if image_ext.lower() in ("jpg", "jpeg") else image_ext.lower()
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    prompt = (
+        "This image is embedded in an internal network/IT design document. "
+        "Describe it precisely and completely: transcribe every visible label, "
+        "device/node name, IP address, VLAN, port, and any other text exactly "
+        "as written. If it's a diagram, describe how the nodes connect to each "
+        "other. If it's a screenshot, describe what is shown. Be thorough - "
+        "this description is the only way this image's content becomes "
+        "searchable, so do not omit any legible detail."
+    )
+
+    try:
+        response = _openai_vision_client.chat.completions.create(
+            model=config.VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/{mime};base64,{b64}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }],
+            max_tokens=1000,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[VISION] describe_image failed: {e}")
+        return None
 
 
 # ============================================================================

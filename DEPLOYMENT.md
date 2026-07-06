@@ -241,6 +241,55 @@ This enables flash attention and a quantized KV cache on the Ollama service
 `OLLAMA_LANGUAGE_MODEL=qwen2.5:3b` in `.env` (see `.env.example`) for a bigger
 speed win if 7B answers still feel too slow.
 
+### Image/diagram comprehension in design documents (optional, uses OpenAI)
+
+Local Ollama vision models were evaluated and rejected for this: `moondream`
+hallucinated device names/IPs on a complex synthetic network diagram, and
+`llama3.2-vision` was accurate but far too slow on CPU-only hardware.
+
+Instead, `ENABLE_VISION_EXTRACTION=true` (in `.env`) uses OpenAI's `gpt-4o`
+just for images: when a PDF is uploaded, embedded images/diagrams are pulled
+out, described in detail by `gpt-4o` (device names, IPs, VLANs, connections -
+transcribed as text), and that description becomes part of the searchable
+index alongside the document's normal text. **Normal text Q&A stays on local
+Ollama** - only the images themselves are ever sent to OpenAI, and only when
+this flag is on.
+
+**Before enabling on the real server**, check two things:
+
+1. **Data policy** - confirm sending document images to OpenAI's API is
+   acceptable. Leave this off otherwise.
+2. **Network egress** - many corporate/telecom networks block outbound
+   internet from servers by default. Test from the BNO server itself (not
+   your laptop) before relying on this:
+
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" https://api.openai.com/v1/models \
+     -H "Authorization: Bearer $OPENAI_API_KEY"
+   ```
+
+   - `200` - reachable, key works, you're good to enable the feature.
+   - Connection timeout / `curl: (7)` / `(28)` - the server can't reach the
+     internet at all (firewall/proxy blocking egress). This needs a firewall
+     rule or an HTTP proxy config from your network team before OpenAI-backed
+     features can work here - the app itself is not misconfigured in that case.
+   - `401`/`403` - key issue (revoked/invalid), not a network issue.
+
+Setup once cleared:
+
+```bash
+# in .env
+OPENAI_API_KEY=sk-...
+ENABLE_VISION_EXTRACTION=true
+# optional overrides (defaults shown):
+# OPENAI_VISION_MODEL=gpt-4o
+# VISION_MIN_IMAGE_DIM=150
+# VISION_MAX_IMAGES_PER_DOC=20
+```
+
+Then `sudo systemctl restart bnollm` and re-upload (or Retry) any documents
+with diagrams so they get indexed with the new image descriptions.
+
 ---
 
 ## 9. Day-to-day operations
@@ -262,7 +311,8 @@ App data lives under `/opt/bnollm/BNOLLM/data/`:
 
 ## 10. Security checklist (do not skip on a shared server)
 
-- [ ] `SECRET_KEY` set to a random value in `.env` (not the default)
+- [ ] `SECRET_KEY` set to a random value in `.env` (not the default, and NOT
+      an API key - generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`)
 - [ ] `ADMIN_PASSWORD` changed from "admin"
 - [ ] `.env` is NOT committed to git (already in `.gitignore`)
 - [ ] App runs as a non-root user where possible

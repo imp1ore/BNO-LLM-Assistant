@@ -20,8 +20,8 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.shared.database import get_db, init_db, User, Chat, Message, Document, SessionLocal
-from backend.shared.document_processor import extract_text, split_text_into_chunks
-from backend.shared.llm_providers import get_embedding, get_embeddings_batch, _clean_response as clean_llm_response
+from backend.shared.document_processor import extract_text, split_text_into_chunks, extract_images_from_pdf
+from backend.shared.llm_providers import get_embedding, get_embeddings_batch, describe_image, _clean_response as clean_llm_response
 from backend.shared.vector_db import add_documents, init_vector_db
 from backend.api_server.auth import (
     verify_password, get_password_hash, create_access_token, decode_access_token,
@@ -645,6 +645,21 @@ def process_document_job(doc_id: int):
         chunks = split_text_into_chunks(text)
         if not chunks:
             raise ValueError("No chunks created from document text.")
+
+        # Optional: describe embedded images/diagrams via OpenAI vision so their
+        # content becomes searchable too. Fully opt-in (config.ENABLE_VISION_EXTRACTION)
+        # and never fails the whole indexing job - a bad/uncallable image is just skipped.
+        if config.ENABLE_VISION_EXTRACTION and config.OPENAI_CONFIG.get("api_key") and doc.file_type.lower() == "pdf":
+            try:
+                images = extract_images_from_pdf(doc.file_path)
+                print(f"[VISION] doc {doc_id}: found {len(images)} candidate image(s) to describe")
+                for page_num, image_bytes, image_ext in images:
+                    description = describe_image(image_bytes, image_ext)
+                    if description and description.strip():
+                        chunks.append(f"[Image on page {page_num}]: {description.strip()}")
+            except Exception as e:
+                # Vision extraction is a bonus, not a requirement - log and move on.
+                print(f"[VISION] doc {doc_id}: image description step failed, continuing without it: {e}")
 
         # Embed in batches (far faster than one request per chunk)
         batch_size = getattr(config, "EMBED_BATCH_SIZE", 32)
