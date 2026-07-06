@@ -300,6 +300,19 @@ sudo systemctl stop bnollm
 sudo journalctl -u bnollm --since "1 hour ago"
 ```
 
+**If something seems off** (won't start, crashed after a restart, fresh
+server, just pulled new code) - run this first instead of guessing:
+
+```bash
+./scripts/doctor.sh
+```
+
+It checks Python/dependencies/`.env`/disk space/Ollama+models/port conflicts/
+OpenAI connectivity in one pass, auto-fixes anything safe to fix (missing
+deps, missing models, missing `.env`), and - if the `bnollm` systemd service
+exists and isn't active - automatically prints its last 30 log lines so you
+don't have to dig for the crash reason yourself.
+
 App data lives under `/opt/bnollm/BNOLLM/data/`:
 - `database.db`   - users, chats, messages, document metadata (SQLite)
 - `vectors/`      - ChromaDB vector index

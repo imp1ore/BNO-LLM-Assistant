@@ -36,7 +36,17 @@ if ! curl -s "${OLLAMA_URL}/api/tags" > /dev/null 2>&1; then
 fi
 echo -e "${GREEN}✓ Ollama reachable at ${OLLAMA_URL}${NC}"
 
+# Fail fast with a clear message instead of a confusing bind error if something
+# (a previous run, another service) already has the port.
+API_PORT=$(python3 -c "import sys; sys.path.insert(0,'.'); import config; print(config.API_SERVER_PORT)" 2>/dev/null || echo "9000")
+if lsof -Pi :"$API_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+    echo -e "${RED}ERROR: Port $API_PORT is already in use.${NC}"
+    echo "Stop the other process (try ./scripts/stop.sh, or 'sudo systemctl stop bnollm'"
+    echo "if the systemd service already owns it) or change API_SERVER_PORT in .env."
+    exit 1
+fi
+
 export PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}"
 
-echo -e "${GREEN}Starting API server...${NC}"
+echo -e "${GREEN}Starting API server on port ${API_PORT}...${NC}"
 exec python3 -m backend.api_server.main

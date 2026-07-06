@@ -67,7 +67,7 @@ pip install -r requirements.txt
 cp .env.example .env        # then edit SECRET_KEY / ADMIN_PASSWORD
 
 # 4. Start the app
-./scripts/start.sh          # macOS / Linux
+./scripts/start_prod.sh     # macOS / Linux
 scripts\start.bat           # Windows
 ```
 
@@ -92,7 +92,7 @@ The default admin is `admin` / `admin` unless you set `ADMIN_PASSWORD` in `.env`
 - Users can change their own password (**Change Password** in the top bar); admins
   can reset passwords and delete users from the Admin screen.
 
-To reset the admin password manually: `python scripts/create_admin.py`.
+To reset the admin password manually (e.g. if locked out): `python scripts/reset_admin_password.py`.
 
 ---
 
