@@ -629,6 +629,11 @@ def process_document_job(doc_id: int):
     processed=False (chunk_count=0) on failure so the UI shows it didn't index.
     """
     db = SessionLocal()
+    job_start = _time.monotonic()
+
+    def _elapsed() -> str:
+        return f"{_time.monotonic() - job_start:.1f}s"
+
     try:
         doc = db.query(Document).filter(Document.id == doc_id).first()
         if not doc:
@@ -665,7 +670,7 @@ def process_document_job(doc_id: int):
             print(f"[INDEX] doc {doc_id}: extracting text...", flush=True)
             text = extract_text(doc.file_path, f".{doc.file_type}")
             chunks = split_text_into_chunks(text) if text else []
-            print(f"[INDEX] doc {doc_id}: extracted {len(text)} chars -> {len(chunks)} text chunk(s)", flush=True)
+            print(f"[INDEX] doc {doc_id}: extracted {len(text)} chars -> {len(chunks)} text chunk(s) [{_elapsed()}]", flush=True)
 
             # Optional: describe embedded images/diagrams via OpenAI vision so their
             # content becomes searchable too. Fully opt-in (config.ENABLE_VISION_EXTRACTION),
@@ -714,7 +719,7 @@ def process_document_job(doc_id: int):
         for start in range(0, total, batch_size):
             batch = chunks[start:start + batch_size]
             embeddings.extend(get_embeddings_batch(batch))
-            print(f"[INDEX] doc {doc_id}: embedded {min(start + batch_size, total)}/{total} chunks", flush=True)
+            print(f"[INDEX] doc {doc_id}: embedded {min(start + batch_size, total)}/{total} chunks [{_elapsed()}]", flush=True)
 
         metadata = [
             {"user_id": doc.user_id, "document_id": str(doc.id), "filename": doc.filename}
@@ -726,10 +731,10 @@ def process_document_job(doc_id: int):
         doc.status = "indexed"
         doc.error_message = None
         db.commit()
-        print(f"[INDEX] Document {doc_id} ({doc.filename}) indexed: {len(chunks)} chunks")
+        print(f"[INDEX] Document {doc_id} ({doc.filename}) indexed: {len(chunks)} chunks in {_elapsed()}", flush=True)
     except Exception as e:
         import traceback
-        print(f"[INDEX][ERROR] Document {doc_id} failed: {e}")
+        print(f"[INDEX][ERROR] Document {doc_id} failed after {_elapsed()}: {e}", flush=True)
         traceback.print_exc()
         try:
             doc = db.query(Document).filter(Document.id == doc_id).first()
