@@ -635,6 +635,12 @@ def process_document_job(doc_id: int):
             print(f"[INDEX] Document {doc_id} not found; skipping")
             return
 
+        try:
+            size_mb = (os.path.getsize(doc.file_path) / (1024 * 1024))
+        except OSError:
+            size_mb = 0.0
+        print(f"[INDEX] doc {doc_id}: START '{doc.filename}' ({doc.file_type}, {size_mb:.1f} MB)", flush=True)
+
         image_exts = {ext.lstrip('.') for ext in config.IMAGE_EXTENSIONS}
         if doc.file_type.lower() in image_exts:
             # Standalone image upload (not embedded in a document) - the image
@@ -656,8 +662,10 @@ def process_document_job(doc_id: int):
                 )
             chunks = [description.strip()]
         else:
+            print(f"[INDEX] doc {doc_id}: extracting text...", flush=True)
             text = extract_text(doc.file_path, f".{doc.file_type}")
             chunks = split_text_into_chunks(text) if text else []
+            print(f"[INDEX] doc {doc_id}: extracted {len(text)} chars -> {len(chunks)} text chunk(s)", flush=True)
 
             # Optional: describe embedded images/diagrams via OpenAI vision so their
             # content becomes searchable too. Fully opt-in (config.ENABLE_VISION_EXTRACTION),
@@ -706,7 +714,7 @@ def process_document_job(doc_id: int):
         for start in range(0, total, batch_size):
             batch = chunks[start:start + batch_size]
             embeddings.extend(get_embeddings_batch(batch))
-            print(f"[INDEX] doc {doc_id}: embedded {min(start + batch_size, total)}/{total} chunks")
+            print(f"[INDEX] doc {doc_id}: embedded {min(start + batch_size, total)}/{total} chunks", flush=True)
 
         metadata = [
             {"user_id": doc.user_id, "document_id": str(doc.id), "filename": doc.filename}

@@ -31,6 +31,9 @@ ExecStart=/opt/bnollm/BNOLLM/venv/bin/python -m backend.api_server.main
 # ---------------------------------------------------------------------------
 
 EnvironmentFile=/opt/bnollm/BNOLLM/.env
+# Stream stdout/stderr to the journal immediately (so `journalctl -u bnollm -f`
+# shows indexing progress live instead of in delayed buffered bursts).
+Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5
 
