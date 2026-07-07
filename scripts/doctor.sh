@@ -64,9 +64,20 @@ if [ -d "venv" ]; then
     # shellcheck disable=SC1091
     source venv/bin/activate
     MISSING_DEPS=0
-    for mod in fastapi ollama openai fitz sqlalchemy chromadb sharepoint2text; do
+    for mod in fastapi ollama openai fitz sqlalchemy sharepoint2text; do
         python -c "import $mod" 2>/dev/null || MISSING_DEPS=1
     done
+    # chromadb must be imported the app's way (with the pysqlite3 SQLite swap),
+    # otherwise it raises "unsupported sqlite3" on older Linux and looks missing.
+    python - <<'PY' 2>/dev/null || MISSING_DEPS=1
+import sys
+try:
+    __import__("pysqlite3")
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except ImportError:
+    pass
+import chromadb  # noqa: F401
+PY
     if [ "$MISSING_DEPS" -eq 1 ]; then
         note_warn "Some Python dependencies are missing - running ./scripts/install_deps.sh..."
         bash "$SCRIPT_DIR/install_deps.sh" && note_ok "Dependencies installed" \
