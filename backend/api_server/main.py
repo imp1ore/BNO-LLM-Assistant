@@ -635,47 +635,69 @@ def process_document_job(doc_id: int):
             print(f"[INDEX] Document {doc_id} not found; skipping")
             return
 
-        text = extract_text(doc.file_path, f".{doc.file_type}")
-        chunks = split_text_into_chunks(text) if text else []
+        image_exts = {ext.lstrip('.') for ext in config.IMAGE_EXTENSIONS}
+        if doc.file_type.lower() in image_exts:
+            # Standalone image upload (not embedded in a document) - the image
+            # IS the content, so it can only be indexed via vision description.
+            if not (config.ENABLE_VISION_EXTRACTION and config.OPENAI_CONFIG.get("api_key")):
+                raise ValueError(
+                    "This is an image file, which can only be indexed with vision "
+                    "extraction enabled (ENABLE_VISION_EXTRACTION=true and a valid "
+                    "OPENAI_API_KEY in .env). Enable that, or embed this image inside "
+                    "a PDF/Word/PowerPoint document and upload that instead."
+                )
+            with open(doc.file_path, "rb") as f:
+                image_bytes = f.read()
+            description = describe_image(image_bytes, doc.file_type)
+            if not description or not description.strip():
+                raise ValueError(
+                    "Vision description of this image came back empty - it may be "
+                    "corrupted, unreadable, or the OpenAI call failed."
+                )
+            chunks = [description.strip()]
+        else:
+            text = extract_text(doc.file_path, f".{doc.file_type}")
+            chunks = split_text_into_chunks(text) if text else []
 
-        # Optional: describe embedded images/diagrams via OpenAI vision so their
-        # content becomes searchable too. Fully opt-in (config.ENABLE_VISION_EXTRACTION),
-        # covers PDF/PPTX/DOCX, and never fails the whole indexing job - a bad/
-        # uncallable image is just skipped. Deliberately runs BEFORE the "too little
-        # text" check below: image-heavy slide decks/design docs often have very
-        # little raw text and rely entirely on vision to become searchable at all.
-        if config.ENABLE_VISION_EXTRACTION and config.OPENAI_CONFIG.get("api_key"):
-            try:
-                images = extract_images_from_document(doc.file_path, doc.file_type)
-                print(f"[VISION] doc {doc_id}: found {len(images)} candidate image(s) to describe")
-                if images:
-                    # Describe images concurrently (network-bound OpenAI calls) instead
-                    # of one-at-a-time - cuts wall-clock time a lot on figure-heavy docs.
-                    # Small pool size so one document upload doesn't hog OpenAI rate limits.
-                    from concurrent.futures import ThreadPoolExecutor
-                    max_workers = min(5, len(images))
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        described = list(pool.map(
-                            lambda item: (item[0], describe_image(item[1], item[2])),
-                            images,
-                        ))
-                    # Preserve document order (page 1's image before page 2's, etc.)
-                    # even though calls completed out of order.
-                    for location_label, description in described:
-                        if description and description.strip():
-                            chunks.append(f"[Image on {location_label}]: {description.strip()}")
-            except Exception as e:
-                # Vision extraction is a bonus, not a requirement - log and move on.
-                print(f"[VISION] doc {doc_id}: image description step failed, continuing without it: {e}")
+            # Optional: describe embedded images/diagrams via OpenAI vision so their
+            # content becomes searchable too. Fully opt-in (config.ENABLE_VISION_EXTRACTION),
+            # covers PDF/PPTX/DOCX (not yet legacy .doc/.ppt/.xls), and never fails the
+            # whole indexing job - a bad/uncallable image is just skipped. Deliberately
+            # runs BEFORE the "too little text" check below: image-heavy slide decks/
+            # design docs often have very little raw text and rely entirely on vision
+            # to become searchable at all.
+            if config.ENABLE_VISION_EXTRACTION and config.OPENAI_CONFIG.get("api_key"):
+                try:
+                    images = extract_images_from_document(doc.file_path, doc.file_type)
+                    print(f"[VISION] doc {doc_id}: found {len(images)} candidate image(s) to describe")
+                    if images:
+                        # Describe images concurrently (network-bound OpenAI calls) instead
+                        # of one-at-a-time - cuts wall-clock time a lot on figure-heavy docs.
+                        # Small pool size so one document upload doesn't hog OpenAI rate limits.
+                        from concurrent.futures import ThreadPoolExecutor
+                        max_workers = min(5, len(images))
+                        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                            described = list(pool.map(
+                                lambda item: (item[0], describe_image(item[1], item[2])),
+                                images,
+                            ))
+                        # Preserve document order (page 1's image before page 2's, etc.)
+                        # even though calls completed out of order.
+                        for location_label, description in described:
+                            if description and description.strip():
+                                chunks.append(f"[Image on {location_label}]: {description.strip()}")
+                except Exception as e:
+                    # Vision extraction is a bonus, not a requirement - log and move on.
+                    print(f"[VISION] doc {doc_id}: image description step failed, continuing without it: {e}")
 
-        if len(text) < 50 and not chunks:
-            raise ValueError(
-                f"Extracted very little text ({len(text)} chars) and no usable "
-                "images. The document may be empty, corrupted, or image-based "
-                "(needs OCR)."
-            )
-        if not chunks:
-            raise ValueError("No chunks created from document text.")
+            if len(text) < 50 and not chunks:
+                raise ValueError(
+                    f"Extracted very little text ({len(text)} chars) and no usable "
+                    "images. The document may be empty, corrupted, or image-based "
+                    "(needs OCR)."
+                )
+            if not chunks:
+                raise ValueError("No chunks created from document text.")
 
         # Embed in batches (far faster than one request per chunk)
         batch_size = getattr(config, "EMBED_BATCH_SIZE", 32)

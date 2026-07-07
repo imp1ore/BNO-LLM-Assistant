@@ -1,6 +1,6 @@
 """
-Document processing module - handles PDF, DOCX, PPTX, TXT files
-Extracts text and splits into chunks for RAG
+Document processing module - extracts text from PDF, Office, plain text,
+legacy Office, CSV/HTML, email, and other common document formats.
 """
 import os
 import hashlib
@@ -33,6 +33,14 @@ try:
     from PIL import Image as PILImage
 except ImportError:
     PILImage = None
+
+try:
+    import sharepoint2text
+except ImportError:
+    sharepoint2text = None
+
+# File types routed to sharepoint2text (see config._GENERIC_EXTENSIONS).
+_GENERIC_EXTRACTOR_TYPES = {ext.lstrip(".") for ext in config._GENERIC_EXTENSIONS}
 
 # Vector metafile formats (common for charts pasted from old Office versions)
 # that PIL/OpenAI's vision API can't read directly as raster images - skipped
@@ -324,6 +332,26 @@ def extract_text_from_txt(file_path: str) -> str:
     return text.strip()
 
 
+def extract_text_generic(file_path: str) -> str:
+    """Extract text from legacy Office (.doc/.ppt/.xls/.rtf), CSV, HTML, and
+    OpenOffice (.odt/.odp/.ods) files via sharepoint2text - pure Python, no
+    LibreOffice or other system dependency required."""
+    if sharepoint2text is None:
+        raise ImportError(
+            "sharepoint-to-text is required for this file type. "
+            "Install with: pip install sharepoint-to-text"
+        )
+    try:
+        result = next(sharepoint2text.read_file(file_path, ignore_images=True))
+        text = result.get_full_text()
+    except StopIteration:
+        text = ""
+    except Exception as e:
+        raise Exception(f"Error reading file: {str(e)}")
+
+    return (text or "").strip()
+
+
 def extract_text(file_path: str, file_type: str) -> str:
     """Extract text from any supported file type"""
     file_type = file_type.lower().lstrip('.')
@@ -334,8 +362,10 @@ def extract_text(file_path: str, file_type: str) -> str:
         return extract_text_from_docx(file_path)
     elif file_type == 'pptx':
         return extract_text_from_pptx(file_path)
-    elif file_type == 'txt':
+    elif file_type in ('txt', 'md'):
         return extract_text_from_txt(file_path)
+    elif file_type in _GENERIC_EXTRACTOR_TYPES:
+        return extract_text_generic(file_path)
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 

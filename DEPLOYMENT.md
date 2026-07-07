@@ -223,6 +223,17 @@ server {
   enforced on the server, not just hidden in the UI.
 - **Re-uploading the same filename replaces the old version** (old chunks and file
   are cleaned up first) - no duplicates.
+- **Supported file types** (the upload UI reads this list from the server, so it
+  stays in sync):
+  - **Modern Office + PDF** (`.pdf`, `.docx`, `.pptx`) - full text extraction;
+    embedded diagram vision when `ENABLE_VISION_EXTRACTION=true`.
+  - **Legacy Office** (`.doc`, `.ppt`, `.xls`, `.rtf`, `.dot`, `.xlt`, …) -
+    text extraction via `sharepoint-to-text` (pure Python, no LibreOffice needed).
+  - **Extra Office/data** (`.xlsx`, `.xlsm`, `.docm`, `.csv`, `.html`, `.xml`,
+    `.json`, `.yaml`, `.msg`, `.eml`, OpenOffice `.odt/.odp/.ods`, …) - same.
+  - **Plain text** (`.txt`, `.md`, `.log`, `.ini`, …).
+  - **Standalone images** (`.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.webp`) -
+    indexed via vision description only (requires `ENABLE_VISION_EXTRACTION`).
 - A GPU on the server dramatically speeds up indexing and answering; CPU-only
   works but is slower for big documents.
 

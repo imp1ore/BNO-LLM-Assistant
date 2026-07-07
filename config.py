@@ -218,7 +218,25 @@ SIMILARITY_THRESHOLD = 0.3  # Minimum similarity score to include a chunk (0.0-1
 # large file no longer blocks the request or times out. The practical ceiling is
 # processing time + disk/RAM, not this number. 100MB is a safe default.
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
+# Modern Office + plain text (dedicated extractors, support embedded-image vision).
+_CORE_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt", ".md"}
+# Everything else sharepoint2text can read - legacy Office binary (.doc/.ppt/.xls),
+# extra Office variants (.xlsx/.docm/.pptm/...), OpenOffice, CSV/HTML/data files,
+# email, etc. Pure Python, no LibreOffice/system dependency. Text only for now
+# (no embedded-image vision on these - use PDF/DOCX/PPTX for diagram-heavy docs).
+_GENERIC_EXTENSIONS = {
+    ".doc", ".dot", ".ppt", ".xls", ".xlt", ".rtf",
+    ".xlsx", ".xlsm", ".xlsb", ".docm", ".dotx", ".pptm",
+    ".odt", ".odp", ".ods",
+    ".csv", ".tsv", ".html", ".htm", ".xml", ".json",
+    ".yaml", ".yml", ".log", ".ini", ".cfg",
+    ".msg", ".eml",
+}
+# Standalone diagrams/screenshots uploaded on their own (not embedded in a
+# document) - only usable if ENABLE_VISION_EXTRACTION is on; rejected with a
+# clear message otherwise (see process_document_job).
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+ALLOWED_EXTENSIONS = _CORE_EXTENSIONS | _GENERIC_EXTENSIONS | IMAGE_EXTENSIONS
 
 # How many chunks to embed per Ollama call during indexing. Batching is much
 # faster than one request per chunk. Lower it if you hit memory limits.

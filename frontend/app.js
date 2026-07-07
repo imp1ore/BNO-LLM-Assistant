@@ -15,21 +15,45 @@ const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes in milliseconds
 
 // Upload limit (kept in sync with the server via /api/config; fallback below)
 let maxUploadMb = 100;
+let allowedExtensions = [
+    '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.txt', '.md',
+    '.rtf', '.csv', '.html', '.png', '.jpg', '.jpeg', '.gif',
+];
 let docPollTimer = null;
+
+function formatAllowedTypesHint(exts) {
+    if (!exts || !exts.length) return 'PDF, DOC, DOCX, PPTX, XLS, XLSX, TXT, and more';
+    const labels = exts.map((ext) => ext.replace(/^\./, '').toUpperCase());
+    if (labels.length <= 12) return labels.join(', ');
+    return `${labels.slice(0, 12).join(', ')}, and ${labels.length - 12} more`;
+}
+
+function applyClientConfig(cfg) {
+    if (!cfg) return;
+    if (cfg.max_file_size_mb) {
+        maxUploadMb = cfg.max_file_size_mb;
+        const hint = document.getElementById('maxFileSizeHint');
+        if (hint) hint.textContent = `${maxUploadMb}MB`;
+    }
+    if (Array.isArray(cfg.allowed_extensions) && cfg.allowed_extensions.length) {
+        allowedExtensions = cfg.allowed_extensions;
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput) fileInput.accept = allowedExtensions.join(',');
+        const typesHint = document.getElementById('allowedTypesHint');
+        if (typesHint) typesHint.textContent = formatAllowedTypesHint(allowedExtensions);
+    }
+}
 
 async function loadClientConfig() {
     try {
         const resp = await fetch(`${API_BASE_URL}/config`);
         if (resp.ok) {
             const cfg = await resp.json();
-            if (cfg && cfg.max_file_size_mb) {
-                maxUploadMb = cfg.max_file_size_mb;
-                const hint = document.getElementById('maxFileSizeHint');
-                if (hint) hint.textContent = `${maxUploadMb}MB`;
-            }
+            applyClientConfig(cfg);
         }
     } catch (e) {
         console.warn('Could not load client config; using default limit', e);
+        applyClientConfig({ allowed_extensions: allowedExtensions, max_file_size_mb: maxUploadMb });
     }
 }
 
@@ -1444,10 +1468,12 @@ async function processFiles(files) {
     // Process each file
     for (const file of files) {
         // Check file type
-        const allowedTypes = ['.pdf', '.docx', '.pptx', '.txt'];
         const fileExt = '.' + file.name.split('.').pop().toLowerCase();
-        if (!allowedTypes.includes(fileExt)) {
-            showNotification(`Invalid file type: ${file.name}. Please upload PDF, DOCX, PPTX, or TXT files only.`, 'error');
+        if (!allowedExtensions.includes(fileExt)) {
+            showNotification(
+                `Invalid file type: ${file.name}. Allowed types: ${formatAllowedTypesHint(allowedExtensions)}.`,
+                'error'
+            );
             continue;
         }
         

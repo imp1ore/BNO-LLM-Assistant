@@ -69,7 +69,7 @@ class Document(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
-    file_type = Column(String, nullable=False)  # pdf, docx, pptx, txt
+    file_type = Column(String, nullable=False)  # pdf, docx, doc, pptx, xlsx, txt, ...
     file_size = Column(Integer, nullable=False)  # in bytes
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     processed = Column(Boolean, default=False)  # Whether it's been indexed

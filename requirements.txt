@@ -34,6 +34,10 @@ pymupdf>=1.24.0
 # Explicitly pinned even though pymupdf/chromadb pull it in transitively -
 # don't want image-dimension checks to silently break on a future install.
 pillow>=10.0.0
+# Pure-Python text extraction for legacy Office (.doc/.ppt/.xls/.rtf), CSV,
+# HTML, and OpenOffice (.odt/.odp/.ods) files - no LibreOffice/system
+# dependency needed. See document_processor.extract_text_generic.
+sharepoint-to-text>=1.1.0
 
 # Database
 sqlalchemy>=2.0.36
