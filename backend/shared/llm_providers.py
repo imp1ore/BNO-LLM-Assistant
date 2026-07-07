@@ -550,14 +550,65 @@ def _generate_openai_response_stream(prompt: str, context: str = None, **kwargs)
 # ============================================================================
 # Vision (image/diagram description) - independent of LLM_PROVIDER
 # ============================================================================
-def describe_image(image_bytes: bytes, image_ext: str = "png") -> Optional[str]:
-    """Describe an image using OpenAI vision (gpt-4o by default).
+_VISION_PROMPT = (
+    "This image is embedded in an internal network/IT design document. "
+    "Describe it precisely and completely: transcribe every visible label, "
+    "device/node name, IP address, VLAN, port, and any other text exactly "
+    "as written. If it's a diagram, describe how the nodes connect to each "
+    "other. If it's a screenshot, describe what is shown. Be thorough - "
+    "this description is the only way this image's content becomes "
+    "searchable, so do not omit any legible detail."
+)
 
-    Used during indexing to turn embedded diagrams/screenshots into searchable
-    text. Returns None (caller should skip this image) if no OpenAI API key is
-    configured or the call fails - this must never take down the whole
-    document indexing job over one bad image.
+_VISION_TILE_PROMPT = (
+    "This is one quadrant cropped out of a larger diagram from an internal "
+    "network/IT design document (you are only seeing part of the full "
+    "picture). Transcribe every visible label, device/node name, IP address, "
+    "VLAN, port, and any other text in THIS crop exactly as written, and "
+    "describe any connections/lines visible within it. Be thorough - do not "
+    "omit any legible detail, even small text."
+)
+
+_VISION_OVERVIEW_PROMPT = (
+    "This is a diagram from an internal network/IT design document, shown at "
+    "reduced resolution. Give a brief overview (2-4 sentences) of its overall "
+    "layout/structure and how the major sections connect - don't worry about "
+    "transcribing small text precisely, that is handled separately."
+)
+
+
+def _upscale_if_small(image_bytes: bytes, image_ext: str, target_long_side: int = 2000, max_scale: float = 4.0):
+    """Upscale (LANCZOS) an image whose longest side is well under the target.
+
+    OpenAI's vision pipeline only ever removes detail from an oversized image
+    (see the tiling above) - it never adds missing detail back into an
+    undersized one. Tested: a 1000x750 crop with genuinely tiny (10px) text
+    had a critical VLAN ID misread (999 -> 996/906) at native size, and read
+    correctly every time once upscaled ~2.5x before sending. No-op (returns
+    input unchanged) if already large enough or unreadable by Pillow.
     """
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            long_side = max(img.size)
+            if long_side >= target_long_side:
+                return image_bytes, image_ext
+            scale = min(target_long_side / long_side, max_scale)
+            if scale <= 1.05:
+                return image_bytes, image_ext
+            new_size = (int(img.width * scale), int(img.height * scale))
+            resized = img.convert("RGB").resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            resized.save(buf, format="PNG")
+            return buf.getvalue(), "png"
+    except Exception:
+        return image_bytes, image_ext
+
+
+def _call_vision(image_bytes: bytes, image_ext: str, prompt: str, max_tokens: int = 1500) -> Optional[str]:
+    """Single OpenAI vision call. Returns None on any failure (bad key,
+    network error, unsupported format) - callers must treat this as skippable."""
     global _openai_vision_client
     api_key = config.OPENAI_CONFIG.get("api_key")
     if not api_key:
@@ -567,18 +618,9 @@ def describe_image(image_bytes: bytes, image_ext: str = "png") -> Optional[str]:
         from openai import OpenAI
         _openai_vision_client = OpenAI(api_key=api_key)
 
+    image_bytes, image_ext = _upscale_if_small(image_bytes, image_ext)
     mime = "jpeg" if image_ext.lower() in ("jpg", "jpeg") else image_ext.lower()
     b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-    prompt = (
-        "This image is embedded in an internal network/IT design document. "
-        "Describe it precisely and completely: transcribe every visible label, "
-        "device/node name, IP address, VLAN, port, and any other text exactly "
-        "as written. If it's a diagram, describe how the nodes connect to each "
-        "other. If it's a screenshot, describe what is shown. Be thorough - "
-        "this description is the only way this image's content becomes "
-        "searchable, so do not omit any legible detail."
-    )
 
     try:
         response = _openai_vision_client.chat.completions.create(
@@ -596,12 +638,90 @@ def describe_image(image_bytes: bytes, image_ext: str = "png") -> Optional[str]:
                     },
                 ],
             }],
-            max_tokens=1000,
+            max_tokens=max_tokens,
         )
         return response.choices[0].message.content
     except Exception as e:
         print(f"[VISION] describe_image failed: {e}")
         return None
+
+
+def _describe_image_tiled(image_bytes: bytes, width: int, height: int) -> Optional[str]:
+    """For large/dense diagrams: describe an overview pass plus 4 overlapping
+    quadrants at full resolution, then merge. OpenAI internally downscales any
+    single image above its own resolution cap before the model reads it, which
+    can make small text in a big diagram illegible - cropping to quadrants first
+    means each piece is small enough to be read at native/near-native resolution.
+    """
+    import io
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception as e:
+        print(f"[VISION] tiling: could not open image, falling back to single call: {e}")
+        return _call_vision(image_bytes, "png", _VISION_PROMPT, max_tokens=1500)
+
+    overlap_x = int(width * 0.08)
+    overlap_y = int(height * 0.08)
+    mid_x, mid_y = width // 2, height // 2
+    quadrants = [
+        ("top-left", (0, 0, min(mid_x + overlap_x, width), min(mid_y + overlap_y, height))),
+        ("top-right", (max(mid_x - overlap_x, 0), 0, width, min(mid_y + overlap_y, height))),
+        ("bottom-left", (0, max(mid_y - overlap_y, 0), min(mid_x + overlap_x, width), height)),
+        ("bottom-right", (max(mid_x - overlap_x, 0), max(mid_y - overlap_y, 0), width, height)),
+    ]
+
+    parts = []
+
+    overview_buf = io.BytesIO()
+    img.save(overview_buf, format="PNG")
+    overview = _call_vision(overview_buf.getvalue(), "png", _VISION_OVERVIEW_PROMPT, max_tokens=400)
+    if overview and overview.strip():
+        parts.append(f"Overview: {overview.strip()}")
+
+    def _describe_quadrant(item):
+        label, box = item
+        crop_buf = io.BytesIO()
+        img.crop(box).save(crop_buf, format="PNG")
+        desc = _call_vision(crop_buf.getvalue(), "png", _VISION_TILE_PROMPT, max_tokens=1200)
+        return label, desc
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for label, desc in pool.map(_describe_quadrant, quadrants):
+            if desc and desc.strip():
+                parts.append(f"{label.replace('-', ' ').title()} section: {desc.strip()}")
+
+    return "\n".join(parts) if parts else None
+
+
+def describe_image(image_bytes: bytes, image_ext: str = "png") -> Optional[str]:
+    """Describe an image using OpenAI vision (gpt-4o by default).
+
+    Used during indexing to turn embedded diagrams/screenshots into searchable
+    text. Returns None (caller should skip this image) if no OpenAI API key is
+    configured or the call fails - this must never take down the whole
+    document indexing job over one bad image.
+
+    Large images (longer side above config.VISION_TILE_THRESHOLD_PX) are split
+    into overlapping quadrants and described separately at full resolution
+    instead of one call on the whole image - see _describe_image_tiled.
+    """
+    if not config.OPENAI_CONFIG.get("api_key"):
+        return None
+
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(image_bytes)) as probe:
+            width, height = probe.size
+        if max(width, height) > config.VISION_TILE_THRESHOLD_PX:
+            return _describe_image_tiled(image_bytes, width, height)
+    except Exception:
+        pass  # Can't read dimensions - fall through to a normal single-call describe.
+
+    return _call_vision(image_bytes, image_ext, _VISION_PROMPT, max_tokens=1500)
 
 
 # ============================================================================

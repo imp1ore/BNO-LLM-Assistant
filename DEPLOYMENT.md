@@ -248,12 +248,78 @@ hallucinated device names/IPs on a complex synthetic network diagram, and
 `llama3.2-vision` was accurate but far too slow on CPU-only hardware.
 
 Instead, `ENABLE_VISION_EXTRACTION=true` (in `.env`) uses OpenAI's `gpt-4o`
-just for images: when a PDF is uploaded, embedded images/diagrams are pulled
-out, described in detail by `gpt-4o` (device names, IPs, VLANs, connections -
-transcribed as text), and that description becomes part of the searchable
-index alongside the document's normal text. **Normal text Q&A stays on local
-Ollama** - only the images themselves are ever sent to OpenAI, and only when
-this flag is on.
+just for images: when a **PDF, Word (.docx), or PowerPoint (.pptx)** file is
+uploaded, embedded images/diagrams are pulled out, described in detail by
+`gpt-4o` (device names, IPs, VLANs, connections - transcribed as text), and
+that description becomes part of the searchable index alongside the
+document's normal text. **Normal text Q&A stays on local Ollama** - only the
+images themselves are ever sent to OpenAI, and only when this flag is on.
+
+**Cost model - this runs once per upload, not once per question.** The
+description is generated a single time when a document is indexed and stored
+permanently as a chunk. Every later question that touches that diagram is
+answered by searching the already-stored text - it never calls OpenAI vision
+again. Cost only recurs if you re-upload or click "Retry" on the same
+document (since that re-processes it from scratch), not from normal usage.
+
+Multiple images per document run concurrently (small worker pool) rather than
+one-at-a-time, so figure-heavy documents index noticeably faster.
+
+**Large, dense diagrams are automatically tiled.** OpenAI internally
+downscales any single image above its own resolution cap before the model
+reads it - on a big diagram packed with many small labeled nodes, that can
+blur small text into illegibility (tested: a single call on a 3600x2600
+diagram with 81 labeled nodes fabricated wrong IDs/IPs for most rows and
+completely missed one specific critical node placed in a corner). Any image
+wider or taller than `VISION_TILE_THRESHOLD_PX` (default 1600px) is instead
+split into 4 overlapping quadrants plus one lower-res overview pass, each
+described separately at full resolution, then merged - in the same test this
+correctly transcribed every node and caught the one placed in the corner.
+This costs ~5x more vision calls for that one image, but only kicks in for
+genuinely large diagrams.
+
+**Tiny images below `VISION_MIN_IMAGE_DIM` (default 150px, either dimension)
+are skipped entirely** - this exists to filter out logos/bullet icons/
+dividers that would otherwise add noise and cost. If your documents have
+small-but-important diagrams (e.g. compact port maps) that are legitimately
+under 150px, lower this value in `.env`.
+
+**Regular/small images with genuinely tiny embedded text are auto-upscaled
+before sending.** Tiling only fixes the "OpenAI downscales a huge image"
+problem - it doesn't help an image that was already small to begin with
+(tested: forcing tiling on a small image just gave the model even smaller
+crops and didn't fix anything). The real issue there is too few source
+pixels per character, so every image below ~2000px on its longest side is
+now upscaled (LANCZOS, up to 4x) before being sent - confirmed via testing
+that this fixes most misreads of small text.
+
+**Honesty check - this isn't a 100% guarantee.** On a stress-test image with
+deliberately tiny (10px) text, even with upscaling, the model occasionally
+still misread a single digit in one identifier on a re-run (non-deterministic
+model output) - it went from "usually wrong" to "usually right, rarely
+slightly off" rather than "always perfect." Real-world diagrams sized for
+human readability should be fine in practice, but for anything where a wrong
+digit in a description would actually matter (e.g. a VLAN/IP someone might
+act on), treat the vision description as aiding search/retrieval, not as an
+authoritative transcription - the original document/image is still the
+source of truth.
+
+File size is not a concern either way - uploads up to `MAX_FILE_SIZE_MB`
+(default 100MB, comfortably covers a 20MB file) are streamed to disk rather
+than loaded fully into memory, and indexing runs in the background so the
+upload itself returns immediately regardless of file size.
+
+**Known gaps** (a document still indexes fine without these, just without a
+description for that specific image):
+- Native PowerPoint charts/SmartArt and Word charts (not pasted-in pictures)
+  aren't stored as images at all, so they aren't caught - only actual
+  picture/screenshot content is.
+- Legacy WMF/EMF vector metafile images (common for charts pasted from very
+  old Office versions) are skipped, since they can't be read as a normal
+  raster image.
+- Vector graphics drawn natively on a PDF page (not embedded as a raster
+  image) aren't caught either - this would need rendering whole pages to
+  images instead of extracting embedded images, which is a bigger change.
 
 **Before enabling on the real server**, check two things:
 
@@ -284,7 +350,7 @@ ENABLE_VISION_EXTRACTION=true
 # optional overrides (defaults shown):
 # OPENAI_VISION_MODEL=gpt-4o
 # VISION_MIN_IMAGE_DIM=150
-# VISION_MAX_IMAGES_PER_DOC=20
+# VISION_MAX_IMAGES_PER_DOC=0   # 0 = unlimited, all diagrams get described
 ```
 
 Then `sudo systemctl restart bnollm` and re-upload (or Retry) any documents

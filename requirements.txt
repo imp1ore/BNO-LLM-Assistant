@@ -28,9 +28,12 @@ pysqlite3-binary>=0.5.0; sys_platform == "linux"
 PyPDF2==3.0.1
 python-docx==1.1.0
 python-pptx==0.6.23
-# Used only to pull embedded images out of PDFs for optional vision-based
-# diagram description (see ENABLE_VISION_EXTRACTION in config.py).
+# Used only to pull embedded images out of PDFs/DOCX/PPTX for optional
+# vision-based diagram description (see ENABLE_VISION_EXTRACTION in config.py).
 pymupdf>=1.24.0
+# Explicitly pinned even though pymupdf/chromadb pull it in transitively -
+# don't want image-dimension checks to silently break on a future install.
+pillow>=10.0.0
 
 # Database
 sqlalchemy>=2.0.36

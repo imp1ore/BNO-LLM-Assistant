@@ -104,8 +104,20 @@ VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o")
 # Skip tiny embedded images (logos, bullet icons, dividers) - only describe
 # images large enough to plausibly be a real diagram/screenshot.
 VISION_MIN_IMAGE_DIM = int(os.getenv("VISION_MIN_IMAGE_DIM", "150"))
-# Hard cap per document to bound worst-case cost/time on image-heavy files.
-VISION_MAX_IMAGES_PER_DOC = int(os.getenv("VISION_MAX_IMAGES_PER_DOC", "20"))
+# Optional cap per document, mainly as a safety valve against a runaway/
+# malicious file with thousands of tiny embedded images. Default is
+# unlimited (0) - real design docs with 30+ real diagrams/figures should all
+# get described, not silently cut off. Set to a positive number in .env if
+# you want a hard ceiling for cost/time control instead.
+VISION_MAX_IMAGES_PER_DOC = int(os.getenv("VISION_MAX_IMAGES_PER_DOC", "0"))
+# Large diagrams (e.g. a dense network topology with dozens of small labeled
+# nodes) get downscaled by OpenAI internally before the model ever reads them,
+# which can make small text illegible. Above this pixel size (longest side),
+# the image is instead split into overlapping quadrants and each is described
+# at full resolution, then merged - costs ~5x more vision calls for that one
+# image (1 overview + 4 quadrants) but preserves tiny text that would
+# otherwise be lost. Set very high (e.g. 999999) to disable tiling entirely.
+VISION_TILE_THRESHOLD_PX = int(os.getenv("VISION_TILE_THRESHOLD_PX", "1600"))
 
 # Anthropic Configuration (Production Option)
 ANTHROPIC_CONFIG = {

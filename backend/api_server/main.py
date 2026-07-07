@@ -20,7 +20,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.shared.database import get_db, init_db, User, Chat, Message, Document, SessionLocal
-from backend.shared.document_processor import extract_text, split_text_into_chunks, extract_images_from_pdf
+from backend.shared.document_processor import extract_text, split_text_into_chunks, extract_images_from_document
 from backend.shared.llm_providers import get_embedding, get_embeddings_batch, describe_image, _clean_response as clean_llm_response
 from backend.shared.vector_db import add_documents, init_vector_db
 from backend.api_server.auth import (
@@ -636,30 +636,46 @@ def process_document_job(doc_id: int):
             return
 
         text = extract_text(doc.file_path, f".{doc.file_type}")
-        if len(text) < 50:
-            raise ValueError(
-                f"Extracted very little text ({len(text)} chars). "
-                "The document may be empty, corrupted, or image-based (needs OCR)."
-            )
-
-        chunks = split_text_into_chunks(text)
-        if not chunks:
-            raise ValueError("No chunks created from document text.")
+        chunks = split_text_into_chunks(text) if text else []
 
         # Optional: describe embedded images/diagrams via OpenAI vision so their
-        # content becomes searchable too. Fully opt-in (config.ENABLE_VISION_EXTRACTION)
-        # and never fails the whole indexing job - a bad/uncallable image is just skipped.
-        if config.ENABLE_VISION_EXTRACTION and config.OPENAI_CONFIG.get("api_key") and doc.file_type.lower() == "pdf":
+        # content becomes searchable too. Fully opt-in (config.ENABLE_VISION_EXTRACTION),
+        # covers PDF/PPTX/DOCX, and never fails the whole indexing job - a bad/
+        # uncallable image is just skipped. Deliberately runs BEFORE the "too little
+        # text" check below: image-heavy slide decks/design docs often have very
+        # little raw text and rely entirely on vision to become searchable at all.
+        if config.ENABLE_VISION_EXTRACTION and config.OPENAI_CONFIG.get("api_key"):
             try:
-                images = extract_images_from_pdf(doc.file_path)
+                images = extract_images_from_document(doc.file_path, doc.file_type)
                 print(f"[VISION] doc {doc_id}: found {len(images)} candidate image(s) to describe")
-                for page_num, image_bytes, image_ext in images:
-                    description = describe_image(image_bytes, image_ext)
-                    if description and description.strip():
-                        chunks.append(f"[Image on page {page_num}]: {description.strip()}")
+                if images:
+                    # Describe images concurrently (network-bound OpenAI calls) instead
+                    # of one-at-a-time - cuts wall-clock time a lot on figure-heavy docs.
+                    # Small pool size so one document upload doesn't hog OpenAI rate limits.
+                    from concurrent.futures import ThreadPoolExecutor
+                    max_workers = min(5, len(images))
+                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                        described = list(pool.map(
+                            lambda item: (item[0], describe_image(item[1], item[2])),
+                            images,
+                        ))
+                    # Preserve document order (page 1's image before page 2's, etc.)
+                    # even though calls completed out of order.
+                    for location_label, description in described:
+                        if description and description.strip():
+                            chunks.append(f"[Image on {location_label}]: {description.strip()}")
             except Exception as e:
                 # Vision extraction is a bonus, not a requirement - log and move on.
                 print(f"[VISION] doc {doc_id}: image description step failed, continuing without it: {e}")
+
+        if len(text) < 50 and not chunks:
+            raise ValueError(
+                f"Extracted very little text ({len(text)} chars) and no usable "
+                "images. The document may be empty, corrupted, or image-based "
+                "(needs OCR)."
+            )
+        if not chunks:
+            raise ValueError("No chunks created from document text.")
 
         # Embed in batches (far faster than one request per chunk)
         batch_size = getattr(config, "EMBED_BATCH_SIZE", 32)

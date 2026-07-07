@@ -29,6 +29,16 @@ try:
 except ImportError:
     fitz = None
 
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
+
+# Vector metafile formats (common for charts pasted from old Office versions)
+# that PIL/OpenAI's vision API can't read directly as raster images - skipped
+# rather than sent as broken images.
+_UNSUPPORTED_VISION_EXTS = {"emf", "wmf"}
+
 
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF file"""
@@ -47,18 +57,36 @@ def extract_text_from_pdf(file_path: str) -> str:
     return text.strip()
 
 
+def _limit_reached(count: int, max_images: int) -> bool:
+    """max_images <= 0 means unlimited (see config.VISION_MAX_IMAGES_PER_DOC)."""
+    return max_images > 0 and count >= max_images
+
+
+def _raster_dimensions(image_bytes: bytes):
+    """Return (width, height) for a raster image via Pillow, or None if it
+    can't be read as one (e.g. a legacy WMF/EMF vector metafile chart)."""
+    if PILImage is None or not image_bytes:
+        return None
+    try:
+        import io
+        with PILImage.open(io.BytesIO(image_bytes)) as img:
+            return img.size
+    except Exception:
+        return None
+
+
 def extract_images_from_pdf(
     file_path: str,
     min_dim: int = None,
     max_images: int = None,
-) -> List[Tuple[int, bytes, str]]:
+) -> List[Tuple[str, bytes, str]]:
     """Pull embedded images out of a PDF for optional vision description.
 
-    Returns a list of (page_number, image_bytes, image_ext) tuples, 1-indexed
-    pages, e.g. image_ext "png" or "jpeg". Filters out tiny images (icons/
-    logos/dividers) and exact duplicates (the same image repeated across
-    pages/slide masters), and stops once max_images is reached, to bound
-    cost/time on image-heavy documents.
+    Returns a list of (location_label, image_bytes, image_ext) tuples, e.g.
+    ("page 3", b"...", "png"). Filters out tiny images (icons/logos/dividers)
+    and exact duplicates (the same image repeated across pages/slide
+    masters), and stops once max_images is reached, to bound cost/time on
+    image-heavy documents.
     """
     if fitz is None:
         return []
@@ -66,18 +94,18 @@ def extract_images_from_pdf(
     min_dim = config.VISION_MIN_IMAGE_DIM if min_dim is None else min_dim
     max_images = config.VISION_MAX_IMAGES_PER_DOC if max_images is None else max_images
 
-    results: List[Tuple[int, bytes, str]] = []
+    results: List[Tuple[str, bytes, str]] = []
     seen_hashes = set()
 
     try:
         doc = fitz.open(file_path)
         try:
             for page_index in range(len(doc)):
-                if len(results) >= max_images:
+                if _limit_reached(len(results), max_images):
                     break
                 page = doc[page_index]
                 for img in page.get_images(full=True):
-                    if len(results) >= max_images:
+                    if _limit_reached(len(results), max_images):
                         break
                     xref = img[0]
                     try:
@@ -85,6 +113,10 @@ def extract_images_from_pdf(
                     except Exception:
                         continue
                     if not base_image:
+                        continue
+
+                    ext = base_image.get("ext", "png")
+                    if ext.lower() in _UNSUPPORTED_VISION_EXTS:
                         continue
 
                     width = base_image.get("width", 0)
@@ -101,14 +133,151 @@ def extract_images_from_pdf(
                         continue
                     seen_hashes.add(digest)
 
-                    ext = base_image.get("ext", "png")
-                    results.append((page_index + 1, image_bytes, ext))
+                    results.append((f"page {page_index + 1}", image_bytes, ext))
         finally:
             doc.close()
     except Exception as e:
         print(f"[VISION] Failed to extract images from {file_path}: {e}")
 
     return results
+
+
+def extract_images_from_pptx(
+    file_path: str,
+    min_dim: int = None,
+    max_images: int = None,
+) -> List[Tuple[str, bytes, str]]:
+    """Pull picture images out of a PPTX for optional vision description.
+
+    Returns (location_label, image_bytes, image_ext) tuples, e.g.
+    ("slide 4", b"...", "png"). Note: native PowerPoint charts/SmartArt (not
+    pasted-in pictures) aren't stored as images at all and won't be caught
+    here - only actual picture shapes are.
+    """
+    if Presentation is None:
+        return []
+
+    min_dim = config.VISION_MIN_IMAGE_DIM if min_dim is None else min_dim
+    max_images = config.VISION_MAX_IMAGES_PER_DOC if max_images is None else max_images
+
+    results: List[Tuple[str, bytes, str]] = []
+    seen_hashes = set()
+
+    try:
+        prs = Presentation(file_path)
+        for slide_index, slide in enumerate(prs.slides, start=1):
+            if _limit_reached(len(results), max_images):
+                break
+            for shape in slide.shapes:
+                if _limit_reached(len(results), max_images):
+                    break
+                image = getattr(shape, "image", None)
+                if image is None:
+                    continue
+                try:
+                    image_bytes = image.blob
+                    ext = (image.ext or "png").lower()
+                except Exception:
+                    continue
+
+                if ext in _UNSUPPORTED_VISION_EXTS:
+                    continue
+
+                digest = hashlib.sha1(image_bytes).hexdigest()
+                if digest in seen_hashes:
+                    continue
+
+                dims = _raster_dimensions(image_bytes)
+                if dims is None:
+                    continue
+                width, height = dims
+                if width < min_dim or height < min_dim:
+                    continue
+
+                seen_hashes.add(digest)
+                results.append((f"slide {slide_index}", image_bytes, ext))
+    except Exception as e:
+        print(f"[VISION] Failed to extract images from {file_path}: {e}")
+
+    return results
+
+
+def extract_images_from_docx(
+    file_path: str,
+    min_dim: int = None,
+    max_images: int = None,
+) -> List[Tuple[str, bytes, str]]:
+    """Pull embedded images out of a DOCX for optional vision description.
+
+    Returns (location_label, image_bytes, image_ext) tuples. Word doesn't
+    store page breaks as fixed data (pagination is a rendering-time concept),
+    so images are labeled by order rather than a real page number.
+    """
+    if DocxDocument is None:
+        return []
+
+    min_dim = config.VISION_MIN_IMAGE_DIM if min_dim is None else min_dim
+    max_images = config.VISION_MAX_IMAGES_PER_DOC if max_images is None else max_images
+
+    results: List[Tuple[str, bytes, str]] = []
+    seen_hashes = set()
+
+    try:
+        doc = DocxDocument(file_path)
+        order = 0
+        for rel in doc.part.rels.values():
+            if _limit_reached(len(results), max_images):
+                break
+            if "image" not in rel.reltype:
+                continue
+            try:
+                image_bytes = rel.target_part.blob
+                content_type = rel.target_part.content_type  # e.g. "image/png"
+            except Exception:
+                continue
+
+            ext = content_type.split("/")[-1].lower() if content_type else "png"
+            if ext in _UNSUPPORTED_VISION_EXTS:
+                continue
+
+            digest = hashlib.sha1(image_bytes).hexdigest()
+            if digest in seen_hashes:
+                continue
+
+            dims = _raster_dimensions(image_bytes)
+            if dims is None:
+                continue
+            width, height = dims
+            if width < min_dim or height < min_dim:
+                continue
+
+            seen_hashes.add(digest)
+            order += 1
+            results.append((f"image {order}", image_bytes, ext))
+    except Exception as e:
+        print(f"[VISION] Failed to extract images from {file_path}: {e}")
+
+    return results
+
+
+def extract_images_from_document(
+    file_path: str,
+    file_type: str,
+    min_dim: int = None,
+    max_images: int = None,
+) -> List[Tuple[str, bytes, str]]:
+    """Dispatch to the right image extractor based on file type. Returns
+    (location_label, image_bytes, image_ext) tuples, or [] for unsupported
+    types (txt has no images; anything else not implemented yet).
+    """
+    file_type = file_type.lower().lstrip('.')
+    if file_type == "pdf":
+        return extract_images_from_pdf(file_path, min_dim, max_images)
+    elif file_type == "pptx":
+        return extract_images_from_pptx(file_path, min_dim, max_images)
+    elif file_type == "docx":
+        return extract_images_from_docx(file_path, min_dim, max_images)
+    return []
 
 
 def extract_text_from_docx(file_path: str) -> str:
