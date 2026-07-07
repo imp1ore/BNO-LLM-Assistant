@@ -464,6 +464,43 @@
             white-space: nowrap;
         }
 
+        .doc-phase {
+            color: #e65100;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .doc-timer {
+            font-variant-numeric: tabular-nums;
+        }
+
+        .doc-progress-track {
+            margin-top: 8px;
+            width: 100%;
+            max-width: 420px;
+            height: 6px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .doc-progress-fill {
+            height: 100%;
+            width: 0%;
+            background: var(--e-red, #E00800);
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+
+        .doc-progress-fill.indeterminate {
+            width: 40% !important;
+            animation: docIndeterminate 1.2s ease-in-out infinite;
+        }
+
+        @keyframes docIndeterminate {
+            0%   { margin-left: -40%; }
+            100% { margin-left: 100%; }
+        }
+
         .document-actions {
             display: flex;
             align-items: center;

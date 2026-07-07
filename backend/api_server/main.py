@@ -621,6 +621,24 @@ async def query(request: QueryRequest, current_user: User = Depends(get_current_
 # ============================================================================
 # Document Routes
 # ============================================================================
+# Live indexing progress, kept in memory (single-process app). Maps
+# doc_id -> {"phase": str, "done": int, "total": int, "started": float}.
+# Read by GET /api/documents/progress so the web UI can show a live timer and
+# an "embedded X/Y chunks" bar while a document is still processing. Entries are
+# removed when the job finishes (success or failure).
+_indexing_progress: dict = {}
+
+
+def _set_progress(doc_id: int, phase: str, done: int = 0, total: int = 0, started: float = None):
+    entry = _indexing_progress.get(doc_id, {})
+    if started is not None:
+        entry["started"] = started
+    entry["phase"] = phase
+    entry["done"] = done
+    entry["total"] = total
+    _indexing_progress[doc_id] = entry
+
+
 def process_document_job(doc_id: int):
     """Index an uploaded document: extract -> chunk -> embed (batched) -> store.
 
@@ -630,6 +648,7 @@ def process_document_job(doc_id: int):
     """
     db = SessionLocal()
     job_start = _time.monotonic()
+    _set_progress(doc_id, "starting", started=_time.time())
 
     def _elapsed() -> str:
         return f"{_time.monotonic() - job_start:.1f}s"
@@ -668,6 +687,7 @@ def process_document_job(doc_id: int):
             chunks = [description.strip()]
         else:
             print(f"[INDEX] doc {doc_id}: extracting text...", flush=True)
+            _set_progress(doc_id, "extracting")
             text = extract_text(doc.file_path, f".{doc.file_type}")
             chunks = split_text_into_chunks(text) if text else []
             print(f"[INDEX] doc {doc_id}: extracted {len(text)} chars -> {len(chunks)} text chunk(s) [{_elapsed()}]", flush=True)
@@ -716,10 +736,13 @@ def process_document_job(doc_id: int):
         batch_size = getattr(config, "EMBED_BATCH_SIZE", 32)
         embeddings = []
         total = len(chunks)
+        _set_progress(doc_id, "embedding", done=0, total=total)
         for start in range(0, total, batch_size):
             batch = chunks[start:start + batch_size]
             embeddings.extend(get_embeddings_batch(batch))
-            print(f"[INDEX] doc {doc_id}: embedded {min(start + batch_size, total)}/{total} chunks [{_elapsed()}]", flush=True)
+            done = min(start + batch_size, total)
+            _set_progress(doc_id, "embedding", done=done, total=total)
+            print(f"[INDEX] doc {doc_id}: embedded {done}/{total} chunks [{_elapsed()}]", flush=True)
 
         metadata = [
             {"user_id": doc.user_id, "document_id": str(doc.id), "filename": doc.filename}
@@ -747,6 +770,7 @@ def process_document_job(doc_id: int):
         except Exception:
             pass
     finally:
+        _indexing_progress.pop(doc_id, None)
         db.close()
 
 
@@ -897,6 +921,39 @@ async def get_documents(current_user: User = Depends(get_current_user), db: Sess
     documents = db.query(Document).order_by(Document.uploaded_at.desc()).all()
     
     return documents
+
+
+@app.get("/api/documents/progress")
+async def get_documents_progress(current_user: User = Depends(get_current_user)):
+    """Live indexing progress for documents currently being processed.
+
+    Returns a small map keyed by document id, e.g.:
+        {"12": {"phase": "embedding", "done": 384, "total": 412,
+                "elapsed_seconds": 9.8, "percent": 93}}
+    The web UI polls this once a second while any document is processing to show
+    a live timer + progress bar. Empty object means nothing is indexing.
+    """
+    if not current_user.can_upload and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Upload access required")
+
+    now = _time.time()
+    out = {}
+    # Snapshot keys first - the background thread may mutate the dict while we read.
+    for doc_id in list(_indexing_progress.keys()):
+        entry = _indexing_progress.get(doc_id)
+        if not entry:
+            continue
+        started = entry.get("started")
+        total = entry.get("total", 0) or 0
+        done = entry.get("done", 0) or 0
+        out[str(doc_id)] = {
+            "phase": entry.get("phase", "processing"),
+            "done": done,
+            "total": total,
+            "percent": int(done * 100 / total) if total > 0 else None,
+            "elapsed_seconds": round(now - started, 1) if started else None,
+        }
+    return out
 
 
 @app.get("/api/documents/stats")

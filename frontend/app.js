@@ -1334,6 +1334,22 @@ function renderDocuments(documents) {
             ? `<button class="retry-doc-btn" onclick="reindexDocument(${doc.id})" title="Retry indexing">↻ Retry</button>`
             : '';
 
+        // While processing, show a live timer + progress bar (updated by the
+        // ticker below). Otherwise show the final chunk count.
+        const metaTail = (status === 'processing')
+            ? `<span class="meta-separator">•</span>
+               <span class="meta-item doc-timer" id="docTimer_${doc.id}">⏱ 0:00</span>
+               <span class="meta-separator">•</span>
+               <span class="meta-item doc-phase" id="docPhase_${doc.id}">queued…</span>`
+            : `<span class="meta-separator">•</span>
+               <span class="meta-item">${doc.chunk_count || 0} chunks</span>`;
+
+        const progressBar = (status === 'processing')
+            ? `<div class="doc-progress-track" id="docBarWrap_${doc.id}">
+                   <div class="doc-progress-fill" id="docBar_${doc.id}" style="width:0%"></div>
+               </div>`
+            : '';
+
         docItem.innerHTML = `
             <div class="document-info">
                 <div class="document-header">
@@ -1344,9 +1360,9 @@ function renderDocuments(documents) {
                 </div>
                 <div class="document-meta">
                     <span class="meta-item">${formatFileSize(doc.file_size)}</span>
-                    <span class="meta-separator">•</span>
-                    <span class="meta-item">${doc.chunk_count || 0} chunks</span>
+                    ${metaTail}
                 </div>
+                ${progressBar}
                 ${errorLine}
             </div>
             <div class="document-actions">
@@ -1364,6 +1380,86 @@ function renderDocuments(documents) {
     if (!anyProcessing && docPollTimer) {
         clearTimeout(docPollTimer);
         docPollTimer = null;
+    }
+    if (anyProcessing) {
+        startProcessingTicker();
+    } else {
+        stopProcessingTicker();
+    }
+}
+
+// Live timer + progress bar for documents that are still indexing.
+let processingTicker = null;
+let progressFetchInFlight = false;
+
+function formatMMSS(totalSeconds) {
+    const s = Math.max(0, Math.floor(totalSeconds));
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${m}:${rem.toString().padStart(2, '0')}`;
+}
+
+async function updateProcessingUI() {
+    // If there are no processing rows on screen, stop the ticker.
+    if (!document.querySelector('.doc-timer')) {
+        stopProcessingTicker();
+        return;
+    }
+    if (progressFetchInFlight) return;
+    progressFetchInFlight = true;
+    try {
+        const resp = await fetch(`${API_BASE_URL}/documents/progress`, {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        if (!resp.ok) return;
+        const progress = await resp.json();
+        // Update each processing document from the server's authoritative data.
+        Object.keys(progress).forEach(docId => {
+            const p = progress[docId];
+            const timerEl = document.getElementById(`docTimer_${docId}`);
+            const phaseEl = document.getElementById(`docPhase_${docId}`);
+            const barEl = document.getElementById(`docBar_${docId}`);
+            if (timerEl && p.elapsed_seconds != null) {
+                timerEl.textContent = `⏱ ${formatMMSS(p.elapsed_seconds)}`;
+            }
+            if (phaseEl) {
+                let label = p.phase || 'processing';
+                if (p.phase === 'embedding' && p.total > 0) {
+                    label = `embedding ${p.done}/${p.total} chunks`;
+                } else if (p.phase === 'extracting') {
+                    label = 'extracting text…';
+                } else if (p.phase === 'starting') {
+                    label = 'starting…';
+                }
+                phaseEl.textContent = label;
+            }
+            if (barEl) {
+                if (p.percent != null) {
+                    barEl.style.width = `${p.percent}%`;
+                    barEl.classList.remove('indeterminate');
+                } else {
+                    // No known total yet (extraction phase) - show an indeterminate pulse.
+                    barEl.classList.add('indeterminate');
+                }
+            }
+        });
+    } catch (e) {
+        // Network hiccup - ignore; next tick retries.
+    } finally {
+        progressFetchInFlight = false;
+    }
+}
+
+function startProcessingTicker() {
+    if (processingTicker) return;
+    updateProcessingUI();
+    processingTicker = setInterval(updateProcessingUI, 1000);
+}
+
+function stopProcessingTicker() {
+    if (processingTicker) {
+        clearInterval(processingTicker);
+        processingTicker = null;
     }
 }
 
