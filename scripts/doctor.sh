@@ -64,13 +64,13 @@ if [ -d "venv" ]; then
     # shellcheck disable=SC1091
     source venv/bin/activate
     MISSING_DEPS=0
-    for mod in fastapi ollama openai fitz sqlalchemy chromadb; do
+    for mod in fastapi ollama openai fitz sqlalchemy chromadb sharepoint2text; do
         python -c "import $mod" 2>/dev/null || MISSING_DEPS=1
     done
     if [ "$MISSING_DEPS" -eq 1 ]; then
-        note_warn "Some Python dependencies are missing - installing from requirements.txt..."
-        python -m pip install -q -r requirements.txt && note_ok "Dependencies installed" \
-            || note_issue "pip install failed - check disk space and network access"
+        note_warn "Some Python dependencies are missing - running ./scripts/install_deps.sh..."
+        bash "$SCRIPT_DIR/install_deps.sh" && note_ok "Dependencies installed" \
+            || note_issue "install_deps.sh failed - see output above"
     else
         note_ok "Python dependencies present"
     fi

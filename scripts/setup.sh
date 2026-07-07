@@ -50,16 +50,7 @@ if [ ! -d "venv" ]; then
     echo "Creating virtual environment (venv/)..."
     "$PYTHON" -m venv venv || { echo -e "${RED}Failed to create venv${NC}"; exit 1; }
 fi
-# shellcheck disable=SC1091
-source venv/bin/activate
-echo "Installing dependencies (this can take a few minutes the first time)..."
-# Repair/bootstrap pip inside the venv first. This guards against a half-written
-# pip (e.g. from an earlier run that hit "no space left on device") and we always
-# call it via 'python -m pip' so a broken 'pip' shim can't stop us.
-python -m ensurepip --upgrade >/dev/null 2>&1 || true
-python -m pip install --upgrade pip || { echo -e "${RED}Failed to upgrade pip${NC}"; exit 1; }
-python -m pip install -r requirements.txt || { echo -e "${RED}Failed to install dependencies${NC}"; exit 1; }
-echo -e "${GREEN}✓ Dependencies installed${NC}"
+bash "$SCRIPT_DIR/install_deps.sh" || { echo -e "${RED}Dependency install failed${NC}"; exit 1; }
 
 # --- 3. .env ---------------------------------------------------------------
 if [ ! -f ".env" ]; then

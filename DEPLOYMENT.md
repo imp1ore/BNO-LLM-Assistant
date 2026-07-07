@@ -68,15 +68,17 @@ sudo chown -R bnollm:bnollm /opt/bnollm
 
 ## 2. Create a virtual environment and install dependencies
 
-> `./scripts/setup.sh` does all of this automatically. The manual steps are here
-> only if you prefer to do it yourself.
+> `./scripts/setup.sh` does all of this automatically. After a git pull, install
+> or repair dependencies with `./scripts/install_deps.sh` instead of running
+> `pip install -r requirements.txt` by hand. The manual steps below are only
+> if you prefer doing it yourself.
 
 ```bash
 cd /opt/bnollm/BNOLLM
 python3.10 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements.txt   # prefer: ./scripts/install_deps.sh
 ```
 
 ---
